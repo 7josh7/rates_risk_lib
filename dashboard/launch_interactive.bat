@@ -29,4 +29,17 @@ echo.
 echo Press Ctrl+C to stop the server
 echo.
 
-streamlit run interactive_dashboard.py
+REM Check Streamlit is installed in the active Python environment
+python -c "import streamlit" >nul 2>&1
+if errorlevel 1 (
+    echo.
+    echo Error: Streamlit is not installed in this Python environment.
+    echo.
+    echo Install it from the repository root:
+    echo   cd dashboard
+    echo   pip install -r requirements_interactive.txt
+    echo.
+    exit /b 1
+)
+
+python -m streamlit run interactive_dashboard.py

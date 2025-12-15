@@ -30,7 +30,7 @@ import plotly.express as px
 from plotly.subplots import make_subplots
 
 # Add src to path for importing rateslib
-sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 
 from rateslib import (
     # Curves
@@ -100,7 +100,7 @@ st.markdown("""
 @st.cache_data
 def get_data_paths():
     """Get paths to data and output directories."""
-    base_dir = Path(__file__).parent.parent
+    base_dir = Path(__file__).resolve().parent.parent
     return {
         "data": base_dir / "data",
         "output": base_dir / "output",
