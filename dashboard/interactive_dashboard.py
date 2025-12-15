@@ -52,6 +52,19 @@ from rateslib import (
 from rateslib.curves.bootstrap import bootstrap_from_quotes
 
 # =============================================================================
+# Constants
+# =============================================================================
+
+# Curve visualization parameters
+CURVE_PLOT_DAYS = 10950  # 30 years
+CURVE_PLOT_POINTS = 100
+FORWARD_RATE_TIME_STEP = 0.01  # Years for forward rate calculation
+DAYS_PER_YEAR = 365.25
+
+# Random seed for reproducible simulations
+RANDOM_SEED = 42
+
+# =============================================================================
 # Configuration
 # =============================================================================
 
@@ -167,9 +180,9 @@ def build_treasury_curve(valuation_date, quotes_df):
 def plot_curve_comparison(ois_curve, treasury_curve, valuation_date):
     """Plot OIS and Treasury curves for comparison."""
     # Generate points for plotting
-    days_grid = np.linspace(1, 10950, 100)  # 30 years
+    days_grid = np.linspace(1, CURVE_PLOT_DAYS, CURVE_PLOT_POINTS)
     dates_grid = [valuation_date + timedelta(days=int(d)) for d in days_grid]
-    years_grid = days_grid / 365.25
+    years_grid = days_grid / DAYS_PER_YEAR
     
     # Get rates
     ois_rates = []
@@ -179,7 +192,7 @@ def plot_curve_comparison(ois_curve, treasury_curve, valuation_date):
         df_tsy = treasury_curve.discount_factor(dt)
         
         # Convert to zero rates
-        t = (dt - valuation_date).days / 365.25
+        t = (dt - valuation_date).days / DAYS_PER_YEAR
         if t > 0:
             ois_rates.append(-np.log(df_ois) / t)
             treasury_rates.append(-np.log(df_tsy) / t)
@@ -228,9 +241,9 @@ def plot_curve_comparison(ois_curve, treasury_curve, valuation_date):
 
 def plot_discount_factors(ois_curve, treasury_curve, valuation_date):
     """Plot discount factors."""
-    days_grid = np.linspace(1, 10950, 100)
+    days_grid = np.linspace(1, CURVE_PLOT_DAYS, CURVE_PLOT_POINTS)
     dates_grid = [valuation_date + timedelta(days=int(d)) for d in days_grid]
-    years_grid = days_grid / 365.25
+    years_grid = days_grid / DAYS_PER_YEAR
     
     ois_dfs = [ois_curve.discount_factor(dt) for dt in dates_grid]
     tsy_dfs = [treasury_curve.discount_factor(dt) for dt in dates_grid]
@@ -262,20 +275,19 @@ def plot_discount_factors(ois_curve, treasury_curve, valuation_date):
 
 def plot_forward_rates(curve, valuation_date, name='Forward Rates'):
     """Plot instantaneous forward rates."""
-    days_grid = np.linspace(1, 10950, 100)
+    days_grid = np.linspace(1, CURVE_PLOT_DAYS, CURVE_PLOT_POINTS)
     dates_grid = [valuation_date + timedelta(days=int(d)) for d in days_grid]
-    years_grid = days_grid / 365.25
+    years_grid = days_grid / DAYS_PER_YEAR
     
     # Calculate forward rates using finite differences
     forward_rates = []
-    dt_small = 0.01  # Small time step
     
     for dt in dates_grid:
         df1 = curve.discount_factor(dt)
-        dt2 = dt + timedelta(days=int(dt_small * 365.25))
+        dt2 = dt + timedelta(days=int(FORWARD_RATE_TIME_STEP * DAYS_PER_YEAR))
         df2 = curve.discount_factor(dt2)
         
-        fwd_rate = -(np.log(df2) - np.log(df1)) / dt_small
+        fwd_rate = -(np.log(df2) - np.log(df1)) / FORWARD_RATE_TIME_STEP
         forward_rates.append(fwd_rate * 100)
     
     fig = go.Figure()
@@ -476,7 +488,7 @@ def main():
             st.dataframe(ois_quotes.style.format({'rate': '{:.4%}'}), use_container_width=True)
             
             st.metric("Number of Instruments", len(ois_quotes))
-            st.metric("Curve Nodes", len(ois_curve._nodes))
+            st.metric("Curve Nodes", len(ois_curve.get_nodes()))
             
         with col2:
             st.subheader("Treasury NSS Parameters")
@@ -696,7 +708,7 @@ def main():
             st.subheader("Historical Simulation VaR")
             
             # Generate synthetic P&L distribution for demo
-            np.random.seed(42)
+            np.random.seed(RANDOM_SEED)
             historical_pnl = np.random.normal(0, 5000, lookback_days)
             
             var_95 = np.percentile(-historical_pnl, 95)
@@ -719,7 +731,7 @@ def main():
             num_scenarios = st.slider("Number of Scenarios", 1000, 50000, 10000, step=1000)
             
             # Generate Monte Carlo scenarios
-            np.random.seed(42)
+            np.random.seed(RANDOM_SEED)
             mc_pnl = np.random.normal(0, 5000, num_scenarios)
             
             var_95 = np.percentile(-mc_pnl, 95)
@@ -966,15 +978,15 @@ def main():
             st.subheader("OIS Curve Nodes")
             
             nodes_data = []
-            for node_date, df in ois_curve._nodes.items():
-                days = (node_date - valuation_date).days
-                years = days / 365.25
-                zero_rate = -np.log(df) / years if years > 0 else 0
+            for time, df, zero_rate in ois_curve.get_nodes():
+                # Convert time back to date
+                days = int(time * DAYS_PER_YEAR)
+                node_date = valuation_date + timedelta(days=days)
                 
                 nodes_data.append({
                     'Date': node_date,
                     'Days': days,
-                    'Years': f"{years:.2f}",
+                    'Years': f"{time:.4f}",
                     'Discount Factor': f"{df:.6f}",
                     'Zero Rate (%)': f"{zero_rate*100:.4f}"
                 })
