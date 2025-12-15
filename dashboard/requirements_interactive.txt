@@ -1,0 +1,9 @@
+# Interactive Dashboard Dependencies
+streamlit>=1.28.0
+plotly>=5.18.0
+pandas>=2.0.0
+numpy>=1.24.0
+
+# Also include dependencies for Shiny (existing real-time dashboard)
+shiny>=0.6.0
+shinywidgets>=0.3.0
