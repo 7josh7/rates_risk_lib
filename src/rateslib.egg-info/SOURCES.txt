@@ -15,6 +15,11 @@ src/rateslib/curves/instruments.py
 src/rateslib/curves/interpolation.py
 src/rateslib/curves/nss.py
 src/rateslib/liquidity/__init__.py
+src/rateslib/options/__init__.py
+src/rateslib/options/base_models.py
+src/rateslib/options/caplet.py
+src/rateslib/options/sabr_risk.py
+src/rateslib/options/swaption.py
 src/rateslib/pnl/__init__.py
 src/rateslib/pnl/attribution.py
 src/rateslib/pricers/__init__.py
@@ -32,9 +37,15 @@ src/rateslib/var/historical.py
 src/rateslib/var/monte_carlo.py
 src/rateslib/var/scenarios.py
 src/rateslib/var/stress.py
+src/rateslib/vol/__init__.py
+src/rateslib/vol/calibration.py
+src/rateslib/vol/quotes.py
+src/rateslib/vol/sabr.py
 tests/test_conventions.py
 tests/test_curves.py
 tests/test_dates.py
+tests/test_options.py
 tests/test_pricers.py
 tests/test_risk.py
+tests/test_sabr.py
 tests/test_var.py
