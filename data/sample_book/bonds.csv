@@ -1,0 +1,9 @@
+# Sample Trading Book - Bond Details
+# Date: 2024-01-15
+# Additional details for bond positions
+
+bond_id,issuer,cusip,coupon,coupon_frequency,issue_date,maturity_date,day_count,settlement_days
+UST_2Y,US Treasury,912828ZT1,0.0475,2,2024-01-15,2026-01-15,ACT/ACT,1
+UST_5Y,US Treasury,912828ZQ7,0.0425,2,2024-01-15,2029-01-15,ACT/ACT,1
+UST_10Y,US Treasury,912828ZN4,0.0375,2,2024-01-15,2034-01-15,ACT/ACT,1
+UST_30Y,US Treasury,912810TB8,0.0450,2,2024-01-15,2054-01-15,ACT/ACT,1

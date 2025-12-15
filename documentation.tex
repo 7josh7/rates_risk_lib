@@ -1,0 +1,2284 @@
+\documentclass[12pt,a4paper]{report}
+
+% Packages
+\usepackage[utf8]{inputenc}
+\usepackage[T1]{fontenc}
+\usepackage{amsmath,amssymb,amsthm}
+\usepackage{mathtools}
+\usepackage{geometry}
+\usepackage{graphicx}
+\usepackage{booktabs}
+\usepackage{longtable}
+\usepackage{array}
+\usepackage{hyperref}
+\usepackage{xcolor}
+\usepackage{listings}
+\usepackage{fancyhdr}
+\usepackage{titlesec}
+\usepackage{tocloft}
+\usepackage{enumitem}
+\usepackage{float}
+\usepackage{caption}
+\usepackage{subcaption}
+
+% Geometry
+\geometry{margin=1in}
+
+% Colors
+\definecolor{codegreen}{rgb}{0,0.6,0}
+\definecolor{codegray}{rgb}{0.5,0.5,0.5}
+\definecolor{codepurple}{rgb}{0.58,0,0.82}
+\definecolor{backcolour}{rgb}{0.95,0.95,0.92}
+\definecolor{darkblue}{rgb}{0,0,0.6}
+
+% Hyperref setup
+\hypersetup{
+    colorlinks=true,
+    linkcolor=darkblue,
+    filecolor=magenta,
+    urlcolor=cyan,
+    pdftitle={Rates Risk Library Documentation},
+    pdfauthor={},
+    bookmarks=true
+}
+
+% Code listing style
+\lstdefinestyle{pythonstyle}{
+    backgroundcolor=\color{backcolour},
+    commentstyle=\color{codegreen},
+    keywordstyle=\color{codepurple},
+    numberstyle=\tiny\color{codegray},
+    stringstyle=\color{codegreen},
+    basicstyle=\ttfamily\footnotesize,
+    breakatwhitespace=false,
+    breaklines=true,
+    captionpos=b,
+    keepspaces=true,
+    numbers=left,
+    numbersep=5pt,
+    showspaces=false,
+    showstringspaces=false,
+    showtabs=false,
+    tabsize=2,
+    language=Python
+}
+\lstset{style=pythonstyle}
+
+% Header/Footer
+\pagestyle{fancy}
+\fancyhf{}
+\fancyhead[L]{\leftmark}
+\fancyhead[R]{Rates Risk Library v0.1.0}
+\fancyfoot[C]{\thepage}
+\renewcommand{\headrulewidth}{0.4pt}
+\renewcommand{\footrulewidth}{0.4pt}
+
+% Theorem environments
+\newtheorem{definition}{Definition}[chapter]
+\newtheorem{theorem}{Theorem}[chapter]
+\newtheorem{lemma}[theorem]{Lemma}
+\newtheorem{remark}{Remark}[chapter]
+
+% Custom commands
+\newcommand{\code}[1]{\texttt{#1}}
+\newcommand{\df}{\text{DF}}
+\newcommand{\zr}{\text{ZR}}
+\newcommand{\pv}{\text{PV}}
+
+% Title
+\title{
+    \vspace{-2cm}
+    \rule{\linewidth}{0.5mm} \\[0.4cm]
+    {\Huge \bfseries Rates Risk Library} \\[0.3cm]
+    {\Large Technical Documentation} \\[0.2cm]
+    \rule{\linewidth}{0.5mm} \\[1cm]
+    {\large Version 0.1.0} \\[0.5cm]
+    {\large A Comprehensive Python Library for\\
+    Yield Curve Construction, Fixed-Income Pricing,\\
+    and Risk Analytics}
+}
+\author{}
+\date{\today}
+
+\begin{document}
+
+\maketitle
+\thispagestyle{empty}
+
+\tableofcontents
+\newpage
+
+%===============================================================================
+% CHAPTER 1: INTRODUCTION
+%===============================================================================
+\chapter{Introduction}
+
+\section{Overview}
+
+The \textbf{Rates Risk Library} (\code{rateslib}) is a comprehensive Python library designed for USD yield curve construction, fixed-income instrument pricing, and risk analytics. It provides a complete toolkit for trading desk workflows including:
+
+\begin{itemize}
+    \item Real-time risk monitoring
+    \item P\&L attribution and explain
+    \item Value-at-Risk (VaR) calculations
+    \item Scenario analysis and stress testing
+    \item Regulatory risk metrics computation
+\end{itemize}
+
+\section{Library Architecture}
+
+The library is organized into the following modules:
+
+\begin{table}[H]
+\centering
+\begin{tabular}{@{}lp{10cm}@{}}
+\toprule
+\textbf{Module} & \textbf{Description} \\
+\midrule
+\code{conventions} & Day count conventions, business day adjustments, compounding conventions \\
+\code{dates} & Date utilities, tenor parsing, schedule generation \\
+\code{curves} & Yield curve construction, bootstrapping, Nelson-Siegel-Svensson fitting \\
+\code{pricers} & Bond, swap, and futures pricing engines \\
+\code{risk} & DV01, key-rate duration, convexity, bump-and-reprice framework \\
+\code{var} & Historical simulation, Monte Carlo VaR, stress testing \\
+\code{pnl} & P\&L attribution and explain decomposition \\
+\code{vol} & SABR model, vol-quote ingestion, implied-vol calculators, calibration engine \\
+\code{options} & Caplet/swaption pricing using Bachelier/Black'76 with SABR implied vol \\
+\code{reporting} & Output formatting and report generation \\
+\bottomrule
+\end{tabular}
+\caption{Library Module Structure}
+\end{table}
+
+\section{Installation}
+
+\begin{lstlisting}
+# Clone the repository
+git clone https://github.com/yourusername/rates_risk_lib.git
+cd rates_risk_lib
+
+# Install in development mode
+pip install -e .
+
+# Or install dependencies directly
+pip install numpy pandas scipy pyyaml
+\end{lstlisting}
+
+%===============================================================================
+% CHAPTER 2: CONVENTIONS
+%===============================================================================
+\chapter{Conventions and Date Utilities}
+
+\section{Day Count Conventions}
+
+Day count conventions determine how interest accrues between two dates. The library supports the following conventions:
+
+\subsection{ACT/360}
+
+Used for money markets and OIS swaps:
+\begin{equation}
+    \text{Year Fraction} = \frac{\text{Actual Days}}{360}
+\end{equation}
+
+\subsection{ACT/365}
+
+Used for some fixed-income instruments:
+\begin{equation}
+    \text{Year Fraction} = \frac{\text{Actual Days}}{365}
+\end{equation}
+
+\subsection{ACT/ACT (ISDA)}
+
+Used for US Treasury bonds. For periods spanning multiple years:
+\begin{equation}
+    \text{Year Fraction} = \sum_{y=y_1}^{y_2} \frac{\text{Days in year } y}{\text{Actual days in year } y}
+\end{equation}
+
+where days in year $y$ is 366 for leap years and 365 otherwise.
+
+\subsection{30/360}
+
+Used for some swap fixed legs:
+\begin{equation}
+    \text{Year Fraction} = \frac{360(Y_2-Y_1) + 30(M_2-M_1) + (D_2-D_1)}{360}
+\end{equation}
+
+\begin{lstlisting}
+from rateslib import DayCount, year_fraction
+from datetime import date
+
+# Calculate year fraction using ACT/360
+start = date(2024, 1, 15)
+end = date(2024, 7, 15)
+yf = year_fraction(start, end, DayCount.ACT_360)
+print(f"ACT/360: {yf:.6f}")  # 181/360 = 0.502778
+\end{lstlisting}
+
+\section{Business Day Conventions}
+
+\begin{definition}[Modified Following]
+If a date falls on a weekend or holiday, move to the next business day unless it falls in the next month, in which case move to the previous business day.
+\end{definition}
+
+\begin{definition}[Following]
+Move to the next business day if the date falls on a non-business day.
+\end{definition}
+
+\begin{definition}[Preceding]
+Move to the previous business day if the date falls on a non-business day.
+\end{definition}
+
+\section{Compounding Conventions}
+
+The library supports multiple compounding conventions for interest rate calculations:
+
+\begin{table}[H]
+\centering
+\begin{tabular}{@{}ll@{}}
+\toprule
+\textbf{Convention} & \textbf{Formula} \\
+\midrule
+Continuous & $\df(t) = e^{-r \cdot t}$ \\
+Annual & $\df(t) = (1 + r)^{-t}$ \\
+Semi-annual & $\df(t) = (1 + r/2)^{-2t}$ \\
+Simple & $\df(t) = (1 + r \cdot t)^{-1}$ \\
+\bottomrule
+\end{tabular}
+\caption{Compounding Conventions}
+\end{table}
+
+\section{Standard USD Conventions}
+
+\begin{lstlisting}
+from rateslib import Conventions
+
+# USD OIS conventions
+ois_conv = Conventions.usd_ois()
+# Day count: ACT/360, Annual payment, 2-day settlement
+
+# USD Treasury conventions  
+tsy_conv = Conventions.usd_treasury()
+# Day count: ACT/ACT, Semi-annual coupon, 1-day settlement
+
+# USD Swap conventions
+swap_conv = Conventions.usd_swap()
+# Day count: ACT/360, Semi-annual fixed leg
+\end{lstlisting}
+
+\section{Date Utilities}
+
+\subsection{Tenor Parsing}
+
+The \code{DateUtils} class provides utilities for parsing and manipulating tenors:
+
+\begin{lstlisting}
+from rateslib.dates import DateUtils
+from datetime import date
+
+# Parse tenor
+amount, unit = DateUtils.parse_tenor("3M")  # (3, 'M')
+
+# Add tenor to date
+start = date(2024, 1, 15)
+end = DateUtils.add_tenor(start, "6M")  # 2024-07-15
+
+# Convert tenor to years
+years = DateUtils.tenor_to_years("2Y")  # 2.0
+years = DateUtils.tenor_to_years("6M")  # 0.5
+\end{lstlisting}
+
+\subsection{Schedule Generation}
+
+\begin{lstlisting}
+from rateslib.dates import generate_bond_schedule, generate_swap_schedule
+
+# Generate bond payment schedule
+schedule = generate_bond_schedule(
+    settlement=date(2024, 1, 15),
+    maturity=date(2029, 1, 15),
+    frequency=2,  # Semi-annual
+    day_count=DayCount.ACT_ACT
+)
+\end{lstlisting}
+
+%===============================================================================
+% CHAPTER 3: YIELD CURVES
+%===============================================================================
+\chapter{Yield Curve Construction}
+
+\section{Curve Representation}
+
+\subsection{Mathematical Foundation}
+
+A yield curve represents the term structure of interest rates. The library stores curves using discount factors $P(0,t)$ at discrete nodes and interpolates between them.
+
+\begin{definition}[Discount Factor]
+The discount factor $P(0,t)$ is the present value of \$1 received at time $t$:
+\begin{equation}
+    P(0,t) = e^{-z(t) \cdot t}
+\end{equation}
+where $z(t)$ is the continuously compounded zero rate.
+\end{definition}
+
+\begin{definition}[Zero Rate]
+The continuously compounded zero rate $z(t)$ satisfies:
+\begin{equation}
+    z(t) = -\frac{\ln P(0,t)}{t}
+\end{equation}
+\end{definition}
+
+\begin{definition}[Forward Rate]
+The forward rate $f(t_1, t_2)$ for the period $[t_1, t_2]$ is:
+\begin{equation}
+    f(t_1, t_2) = \frac{1}{t_2 - t_1} \left( \frac{P(0,t_1)}{P(0,t_2)} - 1 \right)
+\end{equation}
+\end{definition}
+
+\begin{definition}[Instantaneous Forward Rate]
+The instantaneous forward rate is:
+\begin{equation}
+    f(t) = \lim_{\Delta t \to 0} f(t, t+\Delta t) = -\frac{\partial \ln P(0,t)}{\partial t}
+\end{equation}
+\end{definition}
+
+\subsection{Curve Class API}
+
+\begin{lstlisting}
+from rateslib import Curve
+from datetime import date
+
+# Create a curve
+curve = Curve(
+    anchor_date=date(2024, 1, 15),
+    currency="USD",
+    day_count=DayCount.ACT_365,
+    interpolation_method="cubic_spline"
+)
+
+# Add discount factor nodes
+curve.add_node(time=0.5, discount_factor=0.9750)
+curve.add_node(time=1.0, discount_factor=0.9500)
+curve.add_node(time=2.0, discount_factor=0.9050)
+
+# Build interpolator
+curve.build()
+
+# Query the curve
+df = curve.discount_factor(1.5)      # Discount factor at 1.5 years
+zr = curve.zero_rate(2.0)            # Zero rate at 2 years
+fwd = curve.forward_rate(1.0, 2.0)   # Forward rate 1Y to 2Y
+\end{lstlisting}
+
+\section{OIS Curve Bootstrapping}
+
+\subsection{Bootstrap Algorithm}
+
+The OIS bootstrapper builds a discount curve sequentially from market quotes:
+
+\begin{enumerate}
+    \item Sort instruments by maturity
+    \item For each instrument, solve for the discount factor that reprices the quote
+    \item Verify that all instruments reprice within tolerance
+\end{enumerate}
+
+\subsection{Deposit Pricing}
+
+For a deposit with rate $r$ and maturity $T$:
+\begin{equation}
+    P(0,T) = \frac{1}{1 + r \cdot \tau}
+\end{equation}
+where $\tau$ is the day count fraction.
+
+\subsection{OIS Swap Pricing}
+
+For an OIS swap with fixed rate $K$ and payment dates $\{T_i\}_{i=1}^n$:
+\begin{equation}
+    \sum_{i=1}^{n} K \cdot \delta_i \cdot P(0,T_i) = P(0,T_0) - P(0,T_n)
+\end{equation}
+where $\delta_i$ is the day count fraction for period $i$.
+
+Solving for the unknown discount factor:
+\begin{equation}
+    P(0,T_n) = \frac{P(0,T_0) - K \sum_{i=1}^{n-1} \delta_i \cdot P(0,T_i)}{1 + K \cdot \delta_n}
+\end{equation}
+
+\subsection{API Usage}
+
+\begin{lstlisting}
+from rateslib import OISBootstrapper
+from datetime import date
+
+# Initialize bootstrapper
+bootstrapper = OISBootstrapper(
+    anchor_date=date(2024, 1, 15),
+    day_count=DayCount.ACT_360,
+    tolerance=1e-8
+)
+
+# Add market quotes
+quotes = [
+    ("1M", 0.0530),
+    ("3M", 0.0528),
+    ("6M", 0.0525),
+    ("1Y", 0.0520),
+    ("2Y", 0.0510),
+    ("5Y", 0.0480),
+    ("10Y", 0.0450),
+    ("30Y", 0.0420),
+]
+
+# Bootstrap the curve
+instruments = [create_ois_instrument(tenor, rate) 
+               for tenor, rate in quotes]
+result = bootstrapper.bootstrap(instruments, verify=True)
+
+if result.success:
+    curve = result.curve
+    print("Bootstrap successful!")
+    print(f"Max repricing error: {max(result.repricing_errors.values()):.2e}")
+\end{lstlisting}
+
+\section{Nelson-Siegel-Svensson Model}
+
+\subsection{Model Specification}
+
+The Nelson-Siegel-Svensson (NSS) model provides a parsimonious parametric representation of the yield curve using six parameters:
+
+\begin{equation}
+    y(\tau) = \beta_0 + \beta_1 \left( \frac{1-e^{-\tau/\lambda_1}}{\tau/\lambda_1} \right) + \beta_2 \left( \frac{1-e^{-\tau/\lambda_1}}{\tau/\lambda_1} - e^{-\tau/\lambda_1} \right) + \beta_3 \left( \frac{1-e^{-\tau/\lambda_2}}{\tau/\lambda_2} - e^{-\tau/\lambda_2} \right)
+\end{equation}
+
+\subsection{Parameter Interpretation}
+
+\begin{table}[H]
+\centering
+\begin{tabular}{@{}clp{8cm}@{}}
+\toprule
+\textbf{Parameter} & \textbf{Name} & \textbf{Economic Interpretation} \\
+\midrule
+$\beta_0$ & Level & Long-term asymptotic yield \\
+$\beta_1$ & Slope & Short-term component, controls slope \\
+$\beta_2$ & Curvature 1 & Medium-term hump \\
+$\beta_3$ & Curvature 2 & Second hump (Svensson extension) \\
+$\lambda_1$ & Decay 1 & Controls location of first hump \\
+$\lambda_2$ & Decay 2 & Controls location of second hump \\
+\bottomrule
+\end{tabular}
+\caption{NSS Model Parameters}
+\end{table}
+
+\subsection{Limiting Behavior}
+
+As $\tau \to 0$: $y(0) = \beta_0 + \beta_1$ (short rate)
+
+As $\tau \to \infty$: $y(\infty) = \beta_0$ (long-term level)
+
+\subsection{Instantaneous Forward Rate}
+
+The instantaneous forward rate under NSS is:
+\begin{equation}
+    f(\tau) = \beta_0 + \beta_1 e^{-\tau/\lambda_1} + \beta_2 \frac{\tau}{\lambda_1} e^{-\tau/\lambda_1} + \beta_3 \frac{\tau}{\lambda_2} e^{-\tau/\lambda_2}
+\end{equation}
+
+\subsection{Fitting Algorithm}
+
+The model is fitted by minimizing weighted squared errors:
+\begin{equation}
+    \min_{\theta} \sum_{i=1}^{n} w_i \left( y(\tau_i; \theta) - y_i^{\text{obs}} \right)^2
+\end{equation}
+
+The library uses L-BFGS-B with bounds, falling back to differential evolution for global optimization if local methods fail.
+
+\subsection{API Usage}
+
+\begin{lstlisting}
+from rateslib import NelsonSiegelSvensson
+from datetime import date
+
+# Initialize NSS model
+nss = NelsonSiegelSvensson(
+    anchor_date=date(2024, 1, 15),
+    day_count=DayCount.ACT_ACT
+)
+
+# Fit to Treasury par yields
+tenors = ["3M", "6M", "1Y", "2Y", "3Y", "5Y", "7Y", "10Y", "20Y", "30Y"]
+par_yields = [0.0525, 0.0520, 0.0512, 0.0485, 0.0470, 0.0455, 
+              0.0450, 0.0445, 0.0460, 0.0448]
+
+error, residuals = nss.fit_from_par_yields(tenors, par_yields)
+print(f"Fit error: {error:.2e}")
+print(f"Parameters: {nss.params}")
+
+# Query the fitted model
+yield_5y = nss.yield_at(5.0)
+df_10y = nss.discount_factor(10.0)
+fwd_rate = nss.forward_rate(5.0, 10.0)
+
+# Convert to Curve object
+curve = nss.to_curve()
+\end{lstlisting}
+
+%===============================================================================
+% CHAPTER 4: INSTRUMENT PRICING
+%===============================================================================
+\chapter{Instrument Pricing}
+
+\section{Bond Pricing}
+
+\subsection{Coupon Bond Valuation}
+
+The price of a coupon bond is the present value of its cashflows:
+\begin{equation}
+    P_{\text{dirty}} = \sum_{i=1}^{n} C \cdot P(0,t_i) + F \cdot P(0,T)
+\end{equation}
+
+where:
+\begin{itemize}
+    \item $C$ = coupon payment (face value $\times$ coupon rate / frequency)
+    \item $F$ = face value (typically 100)
+    \item $t_i$ = coupon payment dates
+    \item $T$ = maturity date
+\end{itemize}
+
+\subsection{Clean vs Dirty Price}
+
+\begin{equation}
+    P_{\text{clean}} = P_{\text{dirty}} - \text{Accrued Interest}
+\end{equation}
+
+\begin{equation}
+    \text{Accrued Interest} = C \times \frac{\text{Days since last coupon}}{\text{Days in coupon period}}
+\end{equation}
+
+\subsection{Yield to Maturity}
+
+The yield to maturity $y$ is the internal rate of return that equates price to cashflows:
+\begin{equation}
+    P = \sum_{i=1}^{n} \frac{C}{(1+y/m)^{m \cdot t_i}} + \frac{F}{(1+y/m)^{m \cdot T}}
+\end{equation}
+
+where $m$ is the coupon frequency per year.
+
+\subsection{BondPricer API}
+
+\begin{lstlisting}
+from rateslib import BondPricer, Conventions
+
+# Create pricer with curve
+pricer = BondPricer(
+    curve=discount_curve,
+    conventions=Conventions.usd_treasury()
+)
+
+# Price a bond
+dirty, clean, accrued = pricer.price(
+    settlement=date(2024, 1, 15),
+    maturity=date(2029, 1, 15),
+    coupon_rate=0.04,  # 4% annual coupon
+    face_value=100.0,
+    frequency=2  # Semi-annual
+)
+
+print(f"Dirty Price: {dirty:.4f}")
+print(f"Clean Price: {clean:.4f}")
+print(f"Accrued Interest: {accrued:.4f}")
+
+# Compute DV01
+dv01 = pricer.compute_dv01(
+    settlement=date(2024, 1, 15),
+    maturity=date(2029, 1, 15),
+    coupon_rate=0.04,
+    face_value=100.0
+)
+\end{lstlisting}
+
+\section{Interest Rate Swap Pricing}
+
+\subsection{Vanilla IRS Valuation}
+
+A vanilla interest rate swap exchanges fixed for floating payments. The present value is:
+\begin{equation}
+    \pv_{\text{swap}} = \pv_{\text{float}} - \pv_{\text{fixed}}
+\end{equation}
+
+\subsubsection{Fixed Leg}
+
+\begin{equation}
+    \pv_{\text{fixed}} = K \sum_{i=1}^{n} \delta_i \cdot P(0,T_i)
+\end{equation}
+
+where $K$ is the fixed rate and $\delta_i$ is the day count fraction.
+
+\subsubsection{Floating Leg}
+
+At inception (par swap):
+\begin{equation}
+    \pv_{\text{float}} = P(0,T_0) - P(0,T_n)
+\end{equation}
+
+For an off-market swap:
+\begin{equation}
+    \pv_{\text{float}} = \sum_{j=1}^{m} F_j \cdot \delta_j \cdot P(0,T_j)
+\end{equation}
+
+where $F_j$ is the forward rate for period $j$:
+\begin{equation}
+    F_j = \frac{1}{\delta_j} \left( \frac{P(0,T_{j-1})}{P(0,T_j)} - 1 \right)
+\end{equation}
+
+\subsection{Par Swap Rate}
+
+The par swap rate is the fixed rate that makes the swap have zero value:
+\begin{equation}
+    K_{\text{par}} = \frac{P(0,T_0) - P(0,T_n)}{\sum_{i=1}^{n} \delta_i \cdot P(0,T_i)}
+\end{equation}
+
+\subsection{SwapPricer API}
+
+\begin{lstlisting}
+from rateslib import SwapPricer
+
+# Create pricer with discount and projection curves
+pricer = SwapPricer(
+    discount_curve=ois_curve,
+    projection_curve=libor_curve  # Optional, defaults to discount
+)
+
+# Price a swap
+pv = pricer.present_value(
+    effective=date(2024, 1, 17),
+    maturity=date(2029, 1, 17),
+    notional=10_000_000,
+    fixed_rate=0.045,
+    pay_receive="PAY"  # Pay fixed, receive float
+)
+
+# Calculate par rate
+par_rate = pricer.par_rate(
+    effective=date(2024, 1, 17),
+    maturity=date(2029, 1, 17)
+)
+print(f"5Y Par Swap Rate: {par_rate*100:.4f}%")
+\end{lstlisting}
+
+\section{Futures Pricing}
+
+\subsection{SOFR Futures}
+
+SOFR futures settle to the average SOFR rate over the contract period:
+\begin{equation}
+    \text{Price} = 100 - \text{Implied Rate} \times 100
+\end{equation}
+
+\begin{equation}
+    \text{Implied Rate} = \frac{1}{\tau} \left( \frac{P(0,T_1)}{P(0,T_2)} - 1 \right)
+\end{equation}
+
+\subsection{Convexity Adjustment}
+
+Futures rates require a convexity adjustment relative to forward rates due to daily margining:
+\begin{equation}
+    \text{Forward Rate} \approx \text{Futures Rate} - \text{Convexity Adjustment}
+\end{equation}
+
+A simple approximation:
+\begin{equation}
+    \text{Convexity Adj} = \frac{1}{2} \sigma^2 T_1 T_2
+\end{equation}
+
+\subsection{FuturesPricer API}
+
+\begin{lstlisting}
+from rateslib import FuturesPricer
+
+pricer = FuturesPricer(curve=ois_curve)
+
+# Price a 3-month SOFR future
+price = pricer.price(
+    contract_start=date(2024, 3, 20),
+    contract_end=date(2024, 6, 19),
+    tick_value=25.0
+)
+
+# Get implied rate
+implied_rate = pricer.implied_rate(
+    contract_start=date(2024, 3, 20),
+    contract_end=date(2024, 6, 19)
+)
+\end{lstlisting}
+
+%===============================================================================
+% CHAPTER 5: RISK METRICS
+%===============================================================================
+\chapter{Risk Metrics}
+
+\section{DV01 (Dollar Value of 01)}
+
+\subsection{Definition}
+
+DV01 measures the change in portfolio value for a 1 basis point parallel shift in the yield curve:
+\begin{equation}
+    \text{DV01} = \frac{\pv(\text{curve} - 1\text{bp}) - \pv(\text{curve} + 1\text{bp})}{2}
+\end{equation}
+
+\subsection{Relationship to Modified Duration}
+
+For a bond:
+\begin{equation}
+    \text{DV01} = \frac{\text{Modified Duration} \times \text{Price}}{10{,}000}
+\end{equation}
+
+\begin{equation}
+    \text{Modified Duration} = -\frac{\text{DV01} \times 10{,}000}{\pv}
+\end{equation}
+
+\section{Convexity}
+
+\subsection{Definition}
+
+Convexity measures the curvature of the price-yield relationship:
+\begin{equation}
+    \text{Convexity} = \frac{\pv(+\Delta y) + \pv(-\Delta y) - 2 \cdot \pv(0)}{(\Delta y)^2 \cdot \pv(0)}
+\end{equation}
+
+\subsection{Taylor Expansion}
+
+Price change for a yield change $\Delta y$:
+\begin{equation}
+    \Delta \pv \approx -\text{Duration} \times \pv \times \Delta y + \frac{1}{2} \times \text{Convexity} \times \pv \times (\Delta y)^2
+\end{equation}
+
+\section{Key-Rate Duration}
+
+\subsection{Motivation}
+
+Key-rate durations (KRDs) capture sensitivity to non-parallel curve movements by bumping individual tenors:
+\begin{equation}
+    \text{KRD}_i = \frac{\pv(\text{curve with tenor } i \text{ bumped}) - \pv(\text{base})}{\Delta r_i}
+\end{equation}
+
+\subsection{Standard Tenors}
+
+The library uses these standard key-rate tenors:
+\begin{center}
+3M, 6M, 1Y, 2Y, 3Y, 5Y, 7Y, 10Y, 15Y, 20Y, 30Y
+\end{center}
+
+\subsection{Hedging Applications}
+
+Key-rate DV01s are essential for:
+\begin{itemize}
+    \item Curve-neutral hedging
+    \item Immunizing against twist/butterfly moves
+    \item Regulatory risk reporting
+\end{itemize}
+
+\section{BumpEngine API}
+
+\begin{lstlisting}
+from rateslib.risk import BumpEngine
+
+# Create bump engine
+engine = BumpEngine(base_curve=ois_curve)
+
+# Parallel bump
+bumped_curve = engine.parallel_bump(bp=10)  # +10bp parallel
+
+# Single tenor bump
+bumped_curve = engine.tenor_bump(tenor="5Y", bp=5)  # +5bp at 5Y
+
+# Compute DV01
+def portfolio_pv(curve):
+    return sum(pricer.price(curve) for pricer in portfolio)
+
+dv01 = engine.compute_dv01(pricer_func=portfolio_pv, bump_size=1.0)
+convexity = engine.compute_convexity(pricer_func=portfolio_pv, bump_size=1.0)
+\end{lstlisting}
+
+\section{KeyRateEngine API}
+
+\begin{lstlisting}
+from rateslib.risk import KeyRateEngine, STANDARD_KEY_RATE_TENORS
+
+# Create key-rate engine
+kr_engine = KeyRateEngine(
+    curve=ois_curve,
+    tenors=STANDARD_KEY_RATE_TENORS,
+    bump_size=1.0
+)
+
+# Compute key-rate DV01
+kr_dv01 = kr_engine.compute_key_rate_dv01(pricer_func=portfolio_pv)
+
+print(f"Total DV01: {kr_dv01.total_dv01:,.2f}")
+for tenor, dv01 in kr_dv01.dv01s.items():
+    print(f"  {tenor}: {dv01:,.2f}")
+\end{lstlisting}
+
+\section{RiskCalculator API}
+
+\begin{lstlisting}
+from rateslib.risk import RiskCalculator
+
+# Create calculator
+calc = RiskCalculator(curve=ois_curve, bump_size=1.0)
+
+# Compute bond risk
+bond_risk = calc.compute_bond_risk(
+    instrument_id="UST_5Y",
+    settlement=date(2024, 1, 15),
+    maturity=date(2029, 1, 15),
+    coupon_rate=0.04,
+    notional=10_000_000,
+    frequency=2
+)
+
+print(f"PV: ${bond_risk.pv:,.2f}")
+print(f"DV01: ${bond_risk.dv01:,.2f}")
+print(f"Modified Duration: {bond_risk.modified_duration:.2f} years")
+print(f"Convexity: {bond_risk.convexity:,.4f}")
+\end{lstlisting}
+
+%===============================================================================
+% CHAPTER 6: VALUE AT RISK
+%===============================================================================
+\chapter{Value at Risk and Expected Shortfall}
+
+\section{Historical Simulation VaR}
+
+\subsection{Methodology}
+
+Historical simulation uses observed rate changes to estimate the P\&L distribution:
+
+\begin{enumerate}
+    \item Extract historical rate changes $\{\Delta r_t\}$ from a lookback window
+    \item For each historical scenario, apply rate changes to today's curve
+    \item Reprice the portfolio under each shocked curve
+    \item Compute P\&L distribution
+    \item VaR is the loss at the specified percentile
+\end{enumerate}
+
+\subsection{VaR Calculation}
+
+\begin{equation}
+    \text{VaR}_\alpha = -\text{Quantile}_{1-\alpha}(\text{P\&L distribution})
+\end{equation}
+
+For 95\% VaR: loss exceeded in only 5\% of scenarios.
+
+\subsection{Expected Shortfall}
+
+Expected Shortfall (ES), also called CVaR, is the expected loss given that VaR is breached:
+\begin{equation}
+    \text{ES}_\alpha = -\mathbb{E}[\text{P\&L} \mid \text{P\&L} < -\text{VaR}_\alpha]
+\end{equation}
+
+\subsection{API Usage}
+
+\begin{lstlisting}
+from rateslib.var import HistoricalSimulation
+import pandas as pd
+
+# Load historical rate data
+historical_data = pd.read_csv("rates_history.csv")
+
+# Initialize historical simulation
+hist_var = HistoricalSimulation(
+    base_curve=ois_curve,
+    historical_data=historical_data,
+    pricer_func=portfolio_pv,
+    tenors=["3M", "1Y", "2Y", "5Y", "10Y", "30Y"]
+)
+
+# Run simulation
+result = hist_var.run_simulation(lookback_days=252)
+
+print(f"95% VaR: ${result.var_95:,.2f}")
+print(f"99% VaR: ${result.var_99:,.2f}")
+print(f"95% ES:  ${result.es_95:,.2f}")
+print(f"99% ES:  ${result.es_99:,.2f}")
+\end{lstlisting}
+
+\section{Monte Carlo VaR}
+
+\subsection{Methodology}
+
+Monte Carlo VaR simulates rate changes from a multivariate normal distribution:
+
+\begin{enumerate}
+    \item Estimate covariance matrix $\Sigma$ from historical data
+    \item Generate correlated random rate changes: $\Delta r \sim \mathcal{N}(0, \Sigma)$
+    \item Apply simulated shocks to the curve
+    \item Reprice portfolio
+    \item Compute VaR/ES from simulated P\&L distribution
+\end{enumerate}
+
+\subsection{Covariance Estimation}
+
+\begin{equation}
+    \hat{\Sigma}_{ij} = \frac{1}{T-1} \sum_{t=1}^{T} (\Delta r_{i,t} - \bar{\Delta r}_i)(\Delta r_{j,t} - \bar{\Delta r}_j)
+\end{equation}
+
+\subsection{Cholesky Decomposition}
+
+To generate correlated samples, use Cholesky decomposition $\Sigma = LL^T$:
+\begin{equation}
+    \Delta r = L \cdot z, \quad z \sim \mathcal{N}(0, I)
+\end{equation}
+
+\subsection{API Usage}
+
+\begin{lstlisting}
+from rateslib.var import MonteCarloVaR
+
+# Initialize Monte Carlo engine
+mc_var = MonteCarloVaR(
+    base_curve=ois_curve,
+    historical_data=historical_data,
+    pricer_func=portfolio_pv,
+    tenors=["3M", "1Y", "2Y", "5Y", "10Y", "30Y"]
+)
+
+# Run simulation
+result = mc_var.run_simulation(num_paths=10000, seed=42)
+
+print(f"95% VaR: ${result.var_95:,.2f}")
+print(f"99% VaR: ${result.var_99:,.2f}")
+print(f"Mean P&L: ${result.mean_pnl:,.2f}")
+print(f"Std P&L: ${result.std_pnl:,.2f}")
+\end{lstlisting}
+
+\section{Scenario Analysis}
+
+\subsection{Predefined Scenarios}
+
+The library includes standard stress scenarios:
+
+\begin{table}[H]
+\centering
+\begin{tabular}{@{}lp{8cm}@{}}
+\toprule
+\textbf{Scenario} & \textbf{Description} \\
+\midrule
+\code{parallel\_up\_100} & +100bp parallel shift \\
+\code{parallel\_down\_100} & -100bp parallel shift \\
+\code{steepener\_2s10s} & 2Y -25bp, 10Y +25bp \\
+\code{flattener\_2s10s} & 2Y +25bp, 10Y -25bp \\
+\code{twist\_5y} & Short -50bp, Long +50bp, pivot at 5Y \\
+\code{bear\_flattener} & Rates up, short end more (Fed hiking) \\
+\code{bull\_steepener} & Rates down, short end more (Fed cutting) \\
+\bottomrule
+\end{tabular}
+\caption{Standard Stress Scenarios}
+\end{table}
+
+\subsection{API Usage}
+
+\begin{lstlisting}
+from rateslib.var import ScenarioEngine, STANDARD_SCENARIOS
+
+# Create scenario engine
+engine = ScenarioEngine(
+    base_curve=ois_curve,
+    pricer_func=portfolio_pv,
+    key_rate_dv01=kr_dv01.dv01s
+)
+
+# Run all standard scenarios
+for name, scenario in STANDARD_SCENARIOS.items():
+    result = engine.run_scenario(scenario)
+    print(f"{scenario.name}: P&L = ${result.pnl:,.2f}")
+
+# Custom scenario
+from rateslib.var import Scenario
+
+custom = Scenario(
+    name="Fed Pivot",
+    description="Front-end rallies 50bp, long-end sells off 25bp",
+    bump_profile={
+        "3M": -50, "6M": -50, "1Y": -40, "2Y": -30,
+        "5Y": -10, "10Y": 10, "30Y": 25
+    }
+)
+result = engine.run_scenario(custom)
+\end{lstlisting}
+
+%===============================================================================
+% CHAPTER 7: P&L ATTRIBUTION
+%===============================================================================
+\chapter{P\&L Attribution}
+
+\section{Attribution Framework}
+
+\subsection{Components}
+
+Daily P\&L is decomposed into:
+
+\begin{equation}
+    \text{Realized P\&L} = \text{Carry} + \text{Roll-down} + \text{Curve Move} + \text{Convexity} + \text{Residual}
+\end{equation}
+
+\subsection{Carry}
+
+Carry is the income from holding the position, assuming no curve change:
+\begin{equation}
+    \text{Carry} = \text{Coupon Accrual} - \text{Funding Cost}
+\end{equation}
+
+For a bond:
+\begin{equation}
+    \text{Daily Carry} = \frac{\text{Annual Coupon}}{365}
+\end{equation}
+
+\subsection{Roll-down}
+
+Roll-down captures the value change from the position aging one day on an unchanged curve:
+\begin{equation}
+    \text{Roll-down} = \pv(t+1, \text{curve}_t) - \pv(t, \text{curve}_t)
+\end{equation}
+
+\subsection{Curve Move}
+
+Curve move P\&L is predicted from key-rate DV01s:
+\begin{equation}
+    \text{Curve Move} \approx \sum_{i} \text{KRD}_i \times \Delta r_i
+\end{equation}
+
+Split into parallel and non-parallel components:
+\begin{equation}
+    \text{Parallel} = \text{DV01} \times \overline{\Delta r}
+\end{equation}
+\begin{equation}
+    \text{Non-parallel} = \sum_{i} \text{KRD}_i \times (\Delta r_i - \overline{\Delta r})
+\end{equation}
+
+\subsection{Convexity Effect}
+
+Second-order correction for large curve moves:
+\begin{equation}
+    \text{Convexity P\&L} = \frac{1}{2} \times \text{Convexity} \times (\overline{\Delta r})^2
+\end{equation}
+
+\subsection{Residual}
+
+Unexplained P\&L:
+\begin{equation}
+    \text{Residual} = \text{Realized} - \text{Predicted}
+\end{equation}
+
+Sources of residual:
+\begin{itemize}
+    \item Cross-gamma effects
+    \item Interpolation differences
+    \item Timing/settlement effects
+    \item Model limitations
+\end{itemize}
+
+\section{API Usage}
+
+\begin{lstlisting}
+from rateslib.pnl import PnLAttributionEngine
+
+# Initialize attribution engine
+engine = PnLAttributionEngine(
+    curve_t0=yesterday_curve,
+    curve_t1=today_curve,
+    date_t0=date(2024, 1, 14),
+    date_t1=date(2024, 1, 15)
+)
+
+# Compute attribution for a bond
+attribution = engine.attribute_pnl(
+    instrument_id="UST_5Y",
+    pricer_func_t0=lambda c, d: bond_pricer.price(c, d, ...),
+    pricer_func_t1=lambda c, d: bond_pricer.price(c, d, ...),
+    risk_t0=bond_risk
+)
+
+print(f"Realized P&L: ${attribution.realized_pnl:,.2f}")
+print(f"  Carry: ${attribution.components.carry:,.2f}")
+print(f"  Roll-down: ${attribution.components.rolldown:,.2f}")
+print(f"  Curve Move: ${attribution.components.curve_move_total:,.2f}")
+print(f"  Convexity: ${attribution.components.convexity:,.2f}")
+print(f"  Residual: ${attribution.components.residual:,.2f}")
+\end{lstlisting}
+
+%===============================================================================
+% CHAPTER 8: RATES VOLATILITY AND SABR MODEL
+%===============================================================================
+\chapter{Rates Volatility and SABR Model Integration}
+
+\section{Overview}
+
+This chapter specifies the integration of the SABR stochastic volatility model into \code{rateslib} for pricing vanilla rates options (caplets and swaptions) with smile-consistent risk management.
+
+\subsection{Integration Completeness Criteria}
+
+The SABR integration is complete if and only if:
+\begin{enumerate}[leftmargin=1.2em,itemsep=0.2em]
+    \item The architecture table (Chapter 1) includes a \code{vol} module and an \code{options} module.
+    \item The library can ingest market vol quotes (normal or lognormal, optionally shifted), calibrate SABR parameters, and produce implied vols per strike.
+    \item At least one vanilla rates option product (caplet or swaption) can be priced by:
+    \[
+    V = \text{BaseModelPrice}(F_0,K,T,\sigma_{\text{imp}}(K))
+    \]
+    \item Risk reports include \textbf{model-consistent Greeks}: delta with smile-dynamics correction, and vega/vanna/volga.
+\end{enumerate}
+
+\section{Volatility Quote Schema}
+
+\subsection{Input Format}
+
+Volatility quotes are provided in CSV format (\code{vol\_quotes.csv}):
+
+\begin{verbatim}
+date, expiry, underlying_tenor, strike, vol, vol_type, shift
+2025-12-08, 1Y, 5Y, ATM, 0.0075, NORMAL, 0.00
+2025-12-08, 1Y, 5Y, +25bp, 0.0078, NORMAL, 0.00
+2025-12-08, 1Y, 5Y, -25bp, 0.0073, NORMAL, 0.00
+2025-12-08, 1Y, 5Y, +50bp, 0.0082, NORMAL, 0.00
+...
+\end{verbatim}
+
+\subsection{Schema Rules}
+
+\begin{itemize}[leftmargin=1.2em,itemsep=0.1em]
+    \item \code{vol\_type} $\in\{\text{NORMAL},\text{LOGNORMAL}\}$
+    \item If \code{shift} $> 0$, interpret the pricing convention as \emph{shifted lognormal}
+    \item Support ATM conversion between normal and shifted lognormal by matching Bachelier and shifted-Black ATM prices
+    \item Strike conventions: ATM, $\pm$25bp, $\pm$50bp, $\pm$100bp relative to forward
+\end{itemize}
+
+\section{SABR Model Specification}
+
+\subsection{SABR Dynamics}
+
+The SABR model specifies joint dynamics for the forward $F(t)$ and stochastic volatility factor $Z(t)$:
+
+\begin{align}
+    dF(t) &= \alpha Z(t) F(t)^\beta \, dW_1(t) \\
+    dZ(t) &= \nu Z(t) \, dW_2(t) \\
+    dW_1 \, dW_2 &= \rho \, dt
+\end{align}
+
+where:
+\begin{itemize}[leftmargin=1.2em,itemsep=0.1em]
+    \item $\alpha > 0$: instantaneous volatility level
+    \item $\beta \in [0,1]$: CEV exponent (backbone parameter)
+    \item $\rho \in (-1,1)$: correlation between forward and vol
+    \item $\nu \geq 0$: volatility of volatility
+    \item $Z(0) = 1$ (normalized)
+\end{itemize}
+
+\subsection{Shifted SABR for Negative Rates}
+
+For environments with negative rates, use the shifted SABR formulation:
+\begin{equation}
+    dF(t) = \alpha Z(t) \, (F(t) + \lambda)^\beta \, dW_1(t)
+\end{equation}
+
+where $\lambda$ is the shift parameter from \code{vol\_quotes.csv}. The shifted forward $\tilde{F} = F + \lambda$ is always positive.
+
+\subsection{Hagan Implied Volatility Approximation}
+
+The implied Black volatility $\sigma_B(K)$ is computed using the Hagan et al.\ approximation:
+
+\begin{equation}
+    \sigma_B(K,F,T) = \frac{\alpha}{(FK)^{(1-\beta)/2} \left[1 + \frac{(1-\beta)^2}{24}\ln^2\frac{F}{K} + \frac{(1-\beta)^4}{1920}\ln^4\frac{F}{K}\right]} \cdot \frac{z}{x(z)} \cdot \left[1 + \epsilon T\right]
+\end{equation}
+
+where:
+\begin{align}
+    z &= \frac{\nu}{\alpha}(FK)^{(1-\beta)/2}\ln\frac{F}{K} \\
+    x(z) &= \ln\left[\frac{\sqrt{1-2\rho z + z^2} + z - \rho}{1-\rho}\right] \\
+    \epsilon &= \frac{(1-\beta)^2\alpha^2}{24(FK)^{1-\beta}} + \frac{\rho\beta\nu\alpha}{4(FK)^{(1-\beta)/2}} + \frac{(2-3\rho^2)\nu^2}{24}
+\end{align}
+
+At ATM ($K=F$), this simplifies to:
+\begin{equation}
+    \sigma_B^{\text{ATM}} = \frac{\alpha}{F^{1-\beta}}\left[1 + \left(\frac{(1-\beta)^2\alpha^2}{24 F^{2-2\beta}} + \frac{\rho\beta\nu\alpha}{4 F^{1-\beta}} + \frac{(2-3\rho^2)\nu^2}{24}\right)T\right]
+\end{equation}
+
+\section{Calibration}
+
+\subsection{Alternative Parameterization}
+
+For production use, calibrate in $(\sigma_{\text{ATM}}, \beta, \rho, \nu)$ rather than $(\alpha, \beta, \rho, \nu)$:
+
+\begin{enumerate}[leftmargin=1.2em,itemsep=0.1em]
+    \item Fix $\beta$ (typically from historical analysis or market convention)
+    \item Given market $\sigma_{\text{ATM}}$, invert the ATM formula to obtain $\alpha$
+    \item Calibrate $(\rho, \nu)$ to match the smile (OTM strikes)
+\end{enumerate}
+
+\textbf{Advantages:}
+\begin{itemize}[leftmargin=1.2em,itemsep=0.1em]
+    \item ATM vol is directly observable and stable
+    \item Avoids refitting $\alpha$ when ATM moves
+    \item Vega is naturally defined w.r.t.\ $\sigma_{\text{ATM}}$
+\end{itemize}
+
+\subsection{Alpha Inversion}
+
+Given the ATM formula $G(\alpha; \sigma_{\text{ATM}}, \beta, \rho, \nu, F, T) = 0$, solve for $\alpha$ numerically (Newton-Raphson or Brent).
+
+\subsection{Implicit Differentiation for Risk}
+
+Define $G(\alpha(\sigma_{\text{ATM}}, \theta), \theta) - \sigma_{\text{ATM}} = 0$ where $\theta = (\beta, \rho, \nu, F)$.
+
+By implicit differentiation:
+\begin{align}
+    \frac{\partial \alpha}{\partial \sigma_{\text{ATM}}} &= \frac{1}{\partial G / \partial \alpha} \\
+    \frac{\partial \alpha}{\partial \theta_i} &= -\frac{\partial G / \partial \theta_i}{\partial G / \partial \alpha}
+\end{align}
+
+These derivatives are required for computing vega w.r.t.\ $\sigma_{\text{ATM}}$.
+
+\section{Base Pricing Models}
+
+\subsection{Bachelier Model (Normal Vol)}
+
+For normal volatility quoting:
+\begin{equation}
+    V_{\text{call}} = \text{DF} \cdot \left[(F-K)\Phi(d) + \sigma_N\sqrt{T}\phi(d)\right]
+\end{equation}
+where $d = (F-K)/(\sigma_N\sqrt{T})$, $\Phi$ is the standard normal CDF, and $\phi$ is the PDF.
+
+\subsection{Black'76 Model (Lognormal Vol)}
+
+For lognormal volatility quoting:
+\begin{equation}
+    V_{\text{call}} = \text{DF} \cdot \left[F\Phi(d_1) - K\Phi(d_2)\right]
+\end{equation}
+where:
+\begin{align}
+    d_1 &= \frac{\ln(F/K) + \frac{1}{2}\sigma_B^2 T}{\sigma_B\sqrt{T}} \\
+    d_2 &= d_1 - \sigma_B\sqrt{T}
+\end{align}
+
+\subsection{Shifted Black'76}
+
+For shifted lognormal with shift $\lambda$:
+\begin{equation}
+    V_{\text{call}} = \text{DF} \cdot \left[(F+\lambda)\Phi(d_1) - (K+\lambda)\Phi(d_2)\right]
+\end{equation}
+with $d_1, d_2$ computed using $\tilde{F} = F + \lambda$ and $\tilde{K} = K + \lambda$.
+
+\subsection{Pricing Workflow}
+
+The pricing workflow is:
+\begin{equation}
+    V = \text{BaseModel}(F_0, K, T, \sigma_{\text{imp}}(K; \text{SABR params}))
+\end{equation}
+
+\section{Instrument Pricing}
+
+\subsection{Caplet Pricing}
+
+A caplet pays $\delta \cdot \max(L(T_s, T_e) - K, 0)$ at time $T_e$, where $L$ is the LIBOR/SOFR rate.
+
+\begin{equation}
+    V_{\text{caplet}} = \delta \cdot \text{DF}(T_e) \cdot \text{Black/Bachelier}(F_0, K, T_s, \sigma_{\text{imp}}(K))
+\end{equation}
+
+where:
+\begin{itemize}[leftmargin=1.2em,itemsep=0.1em]
+    \item $F_0 = \frac{1}{\delta}\left(\frac{P(0,T_s)}{P(0,T_e)} - 1\right)$ is the forward rate from curves
+    \item $\delta = T_e - T_s$ is the day count fraction
+    \item $\text{DF}(T_e) = P(0,T_e)$ is the discount factor from OIS curve
+\end{itemize}
+
+\subsection{Swaption Pricing}
+
+A payer swaption gives the right to enter a swap paying fixed rate $K$:
+
+\begin{equation}
+    V_{\text{swaption}} = A(0) \cdot \text{Black/Bachelier}(S_0, K, T, \sigma_{\text{imp}}(K))
+\end{equation}
+
+where:
+\begin{itemize}[leftmargin=1.2em,itemsep=0.1em]
+    \item $S_0$ is the forward swap rate
+    \item $A(0) = \sum_{i=1}^{n} \delta_i P(0, T_i)$ is the annuity (PV01)
+    \item $T$ is the option expiry
+\end{itemize}
+
+\section{Model-Consistent Risk}
+
+\subsection{Delta with Smile-Dynamics Correction}
+
+The model-consistent delta accounts for smile movement with the forward:
+\begin{equation}
+    \Delta_{\text{SABR}} = \frac{\partial V}{\partial F} + \frac{\partial V}{\partial \sigma_{\text{imp}}} \cdot \frac{\partial \sigma_{\text{imp}}}{\partial F}
+\end{equation}
+
+For Black'76 implied vol $\sigma_B$:
+\begin{equation}
+    \Delta_{\text{SABR}} = \Delta_{\text{Black}} + \mathcal{V}_{\text{Black}} \cdot \frac{\partial \sigma_B}{\partial F}
+\end{equation}
+
+where $\mathcal{V}_{\text{Black}} = \partial V / \partial \sigma_B$ is Black vega.
+
+\subsection{Sideways vs Backbone Decomposition}
+
+The total derivative $\partial \sigma_B / \partial F$ decomposes into:
+
+\begin{equation}
+    \frac{\partial \sigma_B}{\partial F} = \underbrace{\frac{\partial \sigma_B}{\partial F}\bigg|_{\sigma_{\text{ATM}}}}_\text{Sideways} + \underbrace{\frac{\partial \sigma_B}{\partial \sigma_{\text{ATM}}} \cdot \frac{\partial \sigma_{\text{ATM}}}{\partial F}}_\text{Backbone}
+\end{equation}
+
+\textbf{Sideways term:} Captures sticky-moneyness behavior---the smile slides along fixed ATM level as $k = \ln(F/K)$ changes.
+
+\textbf{Backbone term:} Captures how ATM vol changes with forward level through the backbone relationship.
+
+\textbf{Key insight:} When parameterizing by $\sigma_{\text{ATM}}$ and holding it fixed, the backbone term vanishes, leaving only sideways (sticky-log-moneyness-like) behavior.
+
+\subsection{Vega, Vanna, and Volga}
+
+\begin{definition}[Vega (Desk Definition)]
+Vega with respect to $\sigma_{\text{ATM}}$:
+\begin{equation}
+    \mathcal{V}_{\sigma_{\text{ATM}}} = \frac{\partial V}{\partial \sigma_{\text{ATM}}} = \frac{\partial V}{\partial \sigma_B} \cdot \frac{\partial \sigma_B}{\partial \alpha} \cdot \frac{\partial \alpha}{\partial \sigma_{\text{ATM}}}
+\end{equation}
+\end{definition}
+
+\begin{definition}[Vanna]
+Sensitivity to correlation:
+\begin{equation}
+    \text{Vanna} = \frac{\partial V}{\partial \rho} = \frac{\partial V}{\partial \sigma_B} \cdot \frac{\partial \sigma_B}{\partial \rho}
+\end{equation}
+\end{definition}
+
+\begin{definition}[Volga]
+Sensitivity to vol-of-vol:
+\begin{equation}
+    \text{Volga} = \frac{\partial V}{\partial \nu} = \frac{\partial V}{\partial \sigma_B} \cdot \frac{\partial \sigma_B}{\partial \nu}
+\end{equation}
+\end{definition}
+
+\subsection{Risk Report Output}
+
+The risk report includes:
+\begin{itemize}[leftmargin=1.2em,itemsep=0.1em]
+    \item $\Delta_{\text{base}}$: Delta without smile adjustment
+    \item $\Delta_{\text{SABR}}$: Model-consistent delta with smile dynamics
+    \item $\mathcal{V}_{\sigma_{\text{ATM}}}$: Vega w.r.t.\ ATM vol
+    \item Vanna: $\partial V / \partial \rho$
+    \item Volga: $\partial V / \partial \nu$
+    \item Gamma, Theta (standard)
+\end{itemize}
+
+\section{Testing and Validation}
+
+\subsection{Required Unit Tests}
+
+\begin{enumerate}[leftmargin=1.2em,itemsep=0.1em]
+    \item \textbf{Calibration test:} Fitted implied vols reprice market quotes within tolerance across all strikes.
+    \item \textbf{Greeks test:} Analytic SABR risk matches finite-difference bumps for $F$ and all parameters.
+    \item \textbf{Shift test:} With \code{shift} $> 0$, shifted-lognormal pricing is stable for near-zero and negative forwards.
+    \item \textbf{$\sigma_{\text{ATM}}$ parameterization test:} Keeping $\sigma_{\text{ATM}}$ fixed removes backbone sensitivity from delta.
+\end{enumerate}
+
+\subsection{Demo Script}
+
+Provide \code{scripts/run\_sabr\_demo.py} that:
+\begin{enumerate}[leftmargin=1.2em,itemsep=0.1em]
+    \item Builds OIS and projection curves
+    \item Loads \code{vol\_quotes.csv}
+    \item Calibrates SABR parameters
+    \item Prices a caplet or swaption
+    \item Prints a risk report comparing $\Delta_{\text{base}}$ vs $\Delta_{\text{SABR}}$, plus vega/vanna/volga
+\end{enumerate}
+
+%===============================================================================
+% CHAPTER 9: API REFERENCE
+%===============================================================================
+\chapter{API Reference}
+
+\section{Conventions Module}
+
+\subsection{DayCount Enum}
+
+\begin{lstlisting}
+class DayCount(Enum):
+    ACT_360 = "ACT/360"
+    ACT_365 = "ACT/365"
+    ACT_ACT = "ACT/ACT"
+    THIRTY_360 = "30/360"
+    
+    @classmethod
+    def from_string(cls, s: str) -> "DayCount"
+\end{lstlisting}
+
+\subsection{Conventions Dataclass}
+
+\begin{lstlisting}
+@dataclass
+class Conventions:
+    day_count: DayCount = DayCount.ACT_360
+    business_day: BusinessDayConvention = BusinessDayConvention.MODIFIED_FOLLOWING
+    compounding: CompoundingConvention = CompoundingConvention.CONTINUOUS
+    payment_frequency: int = 1
+    settlement_days: int = 2
+    
+    @classmethod
+    def usd_ois(cls) -> "Conventions"
+    
+    @classmethod
+    def usd_treasury(cls) -> "Conventions"
+    
+    @classmethod
+    def usd_swap(cls) -> "Conventions"
+\end{lstlisting}
+
+\subsection{year\_fraction Function}
+
+\begin{lstlisting}
+def year_fraction(
+    start: date, 
+    end: date, 
+    day_count: DayCount
+) -> float
+\end{lstlisting}
+
+\section{Curves Module}
+
+\subsection{Curve Class}
+
+\begin{lstlisting}
+class Curve:
+    def __init__(
+        self,
+        anchor_date: date,
+        currency: str = "USD",
+        day_count: DayCount = DayCount.ACT_365,
+        interpolation_method: str = "cubic_spline"
+    )
+    
+    def add_node(self, time: float, discount_factor: float) -> None
+    def add_node_from_date(self, d: date, discount_factor: float) -> None
+    def build(self) -> None
+    def discount_factor(self, t: Union[float, date]) -> float
+    def zero_rate(self, t: Union[float, date], 
+                  compounding: CompoundingConvention = ...) -> float
+    def forward_rate(self, t1: float, t2: float) -> float
+    def bump_parallel(self, bp: float) -> "Curve"
+    def bump_tenor(self, tenor: str, bp: float) -> "Curve"
+    def copy(self) -> "Curve"
+\end{lstlisting}
+
+\subsection{OISBootstrapper Class}
+
+\begin{lstlisting}
+class OISBootstrapper:
+    def __init__(
+        self,
+        anchor_date: date,
+        day_count: DayCount = DayCount.ACT_360,
+        tolerance: float = 1e-8,
+        interpolation_method: str = "cubic_spline"
+    )
+    
+    def bootstrap(
+        self,
+        instruments: List[CurveInstrument],
+        verify: bool = True
+    ) -> BootstrapResult
+\end{lstlisting}
+
+\subsection{NelsonSiegelSvensson Class}
+
+\begin{lstlisting}
+class NelsonSiegelSvensson:
+    def __init__(
+        self,
+        anchor_date: date,
+        day_count: DayCount = DayCount.ACT_ACT
+    )
+    
+    def fit(
+        self,
+        maturities: List[float],
+        yields: List[float],
+        weights: Optional[List[float]] = None,
+        initial_guess: Optional[NSSParameters] = None,
+        method: str = "L-BFGS-B"
+    ) -> Tuple[float, np.ndarray]
+    
+    def fit_from_par_yields(
+        self,
+        tenors: List[str],
+        par_yields: List[float],
+        weights: Optional[List[float]] = None
+    ) -> Tuple[float, np.ndarray]
+    
+    def yield_at(self, tau: Union[float, date]) -> float
+    def discount_factor(self, tau: Union[float, date]) -> float
+    def forward_rate(self, t1: float, t2: float) -> float
+    def instantaneous_forward(self, tau: float) -> float
+    def to_curve(self, tenors: List[float] = None) -> Curve
+\end{lstlisting}
+
+\section{Pricers Module}
+
+\subsection{BondPricer Class}
+
+\begin{lstlisting}
+class BondPricer:
+    def __init__(
+        self,
+        curve: Curve,
+        conventions: Optional[Conventions] = None
+    )
+    
+    def price(
+        self,
+        settlement: date,
+        maturity: date,
+        coupon_rate: float,
+        face_value: float = 100.0,
+        frequency: int = 2
+    ) -> Tuple[float, float, float]  # (dirty, clean, accrued)
+    
+    def generate_cashflows(
+        self,
+        settlement: date,
+        maturity: date,
+        coupon_rate: float,
+        face_value: float = 100.0,
+        frequency: int = 2
+    ) -> BondCashflows
+    
+    def compute_dv01(
+        self,
+        settlement: date,
+        maturity: date,
+        coupon_rate: float,
+        face_value: float = 100.0,
+        bump_size: float = 1.0
+    ) -> float
+\end{lstlisting}
+
+\subsection{SwapPricer Class}
+
+\begin{lstlisting}
+class SwapPricer:
+    def __init__(
+        self,
+        discount_curve: Curve,
+        projection_curve: Optional[Curve] = None,
+        fixed_conventions: Optional[Conventions] = None,
+        float_conventions: Optional[Conventions] = None
+    )
+    
+    def present_value(
+        self,
+        effective: date,
+        maturity: date,
+        notional: float,
+        fixed_rate: float,
+        pay_receive: str = "PAY"
+    ) -> float
+    
+    def par_rate(
+        self,
+        effective: date,
+        maturity: date
+    ) -> float
+    
+    def generate_cashflows(
+        self,
+        effective: date,
+        maturity: date,
+        notional: float,
+        fixed_rate: float,
+        pay_receive: str = "PAY"
+    ) -> SwapCashflows
+\end{lstlisting}
+
+\section{Risk Module}
+
+\subsection{BumpEngine Class}
+
+\begin{lstlisting}
+class BumpEngine:
+    def __init__(self, base_curve: Curve)
+    
+    def parallel_bump(self, bp: float) -> Curve
+    def node_bump(self, node_index: int, bp: float) -> Curve
+    def tenor_bump(self, tenor: str, bp: float) -> Curve
+    def custom_bump(self, bump_vector: Dict[str, float]) -> Curve
+    
+    def compute_dv01(
+        self,
+        pricer_func: Callable[[Curve], float],
+        bump_size: float = 1.0
+    ) -> float
+    
+    def compute_convexity(
+        self,
+        pricer_func: Callable[[Curve], float],
+        bump_size: float = 1.0
+    ) -> float
+\end{lstlisting}
+
+\subsection{KeyRateEngine Class}
+
+\begin{lstlisting}
+class KeyRateEngine:
+    def __init__(
+        self,
+        curve: Curve,
+        tenors: Optional[List[str]] = None,
+        bump_size: float = 1.0,
+        interpolate_bumps: bool = False
+    )
+    
+    def compute_key_rate_dv01(
+        self,
+        pricer_func: Callable[[Curve], float]
+    ) -> KeyRateDV01
+\end{lstlisting}
+
+\subsection{RiskCalculator Class}
+
+\begin{lstlisting}
+class RiskCalculator:
+    def __init__(
+        self,
+        curve: Curve,
+        bump_size: float = 1.0
+    )
+    
+    def compute_bond_risk(
+        self,
+        instrument_id: str,
+        settlement: date,
+        maturity: date,
+        coupon_rate: float,
+        notional: float,
+        frequency: int = 2
+    ) -> InstrumentRisk
+    
+    def compute_swap_risk(
+        self,
+        instrument_id: str,
+        effective: date,
+        maturity: date,
+        notional: float,
+        fixed_rate: float,
+        pay_receive: str = "PAY"
+    ) -> InstrumentRisk
+\end{lstlisting}
+
+\section{VaR Module}
+
+\subsection{HistoricalSimulation Class}
+
+\begin{lstlisting}
+class HistoricalSimulation:
+    def __init__(
+        self,
+        base_curve: Curve,
+        historical_data: pd.DataFrame,
+        pricer_func: Callable[[Curve], float],
+        tenors: Optional[List[str]] = None
+    )
+    
+    def run_simulation(
+        self,
+        lookback_days: Optional[int] = None
+    ) -> HistoricalVaRResult
+\end{lstlisting}
+
+\subsection{MonteCarloVaR Class}
+
+\begin{lstlisting}
+class MonteCarloVaR:
+    def __init__(
+        self,
+        base_curve: Curve,
+        historical_data: pd.DataFrame,
+        pricer_func: Callable[[Curve], float],
+        tenors: Optional[List[str]] = None
+    )
+    
+    def simulate_scenarios(
+        self,
+        num_paths: int = 10000,
+        seed: Optional[int] = None
+    ) -> np.ndarray
+    
+    def run_simulation(
+        self,
+        num_paths: int = 10000,
+        seed: Optional[int] = 42
+    ) -> MonteCarloResult
+\end{lstlisting}
+
+\subsection{ScenarioEngine Class}
+
+\begin{lstlisting}
+class ScenarioEngine:
+    def __init__(
+        self,
+        base_curve: Curve,
+        pricer_func: Callable[[Curve], float],
+        key_rate_dv01: Optional[Dict[str, float]] = None
+    )
+    
+    def run_scenario(self, scenario: Scenario) -> ScenarioResult
+    
+    def run_all_scenarios(
+        self,
+        scenarios: Optional[Dict[str, Scenario]] = None
+    ) -> List[ScenarioResult]
+\end{lstlisting}
+
+\section{Volatility Module}
+
+\subsection{SabrParams Dataclass}
+
+\begin{lstlisting}
+@dataclass
+class SabrParams:
+    """SABR model parameters.
+    
+    Attributes:
+        sigma_atm: ATM implied volatility (calibration input)
+        beta: CEV exponent (typically fixed, 0 <= beta <= 1)
+        rho: Correlation between forward and vol (-1 < rho < 1)
+        nu: Volatility of volatility (vol-of-vol)
+        shift: Shift for negative rates (default 0)
+    """
+    sigma_atm: float
+    beta: float
+    rho: float
+    nu: float
+    shift: float = 0.0
+    
+    def to_dict(self) -> Dict[str, float]
+    
+    @classmethod
+    def from_dict(cls, d: Dict[str, float]) -> "SabrParams"
+\end{lstlisting}
+
+\subsection{SabrModel Class}
+
+\begin{lstlisting}
+class SabrModel:
+    """SABR stochastic volatility model.
+    
+    Implements Hagan et al. approximation for implied volatility
+    and provides methods for calibration and risk computation.
+    """
+    
+    def implied_vol_black(
+        self,
+        F: float,
+        K: float,
+        T: float,
+        params: SabrParams
+    ) -> float:
+        """Compute Black'76 implied vol using Hagan approximation."""
+    
+    def implied_vol_normal(
+        self,
+        F: float,
+        K: float,
+        T: float,
+        params: SabrParams
+    ) -> float:
+        """Compute Bachelier (normal) implied vol."""
+    
+    def alpha_from_sigma_atm(
+        self,
+        F: float,
+        T: float,
+        params: SabrParams
+    ) -> float:
+        """Invert ATM formula to get alpha from sigma_atm."""
+    
+    def dalpha_dsigma_atm(
+        self,
+        F: float,
+        T: float,
+        params: SabrParams
+    ) -> float:
+        """Derivative of alpha w.r.t. sigma_atm (for vega)."""
+    
+    def dsigma_dF(
+        self,
+        F: float,
+        K: float,
+        T: float,
+        params: SabrParams,
+        hold_atm_fixed: bool = True
+    ) -> float:
+        """Derivative of implied vol w.r.t. forward.
+        
+        If hold_atm_fixed=True, returns only sideways component.
+        Otherwise includes backbone effect.
+        """
+    
+    def dsigma_drho(
+        self,
+        F: float,
+        K: float,
+        T: float,
+        params: SabrParams
+    ) -> float:
+        """Derivative of implied vol w.r.t. rho (for vanna)."""
+    
+    def dsigma_dnu(
+        self,
+        F: float,
+        K: float,
+        T: float,
+        params: SabrParams
+    ) -> float:
+        """Derivative of implied vol w.r.t. nu (for volga)."""
+\end{lstlisting}
+
+\subsection{SabrCalibrator Class}
+
+\begin{lstlisting}
+class SabrCalibrator:
+    """Calibrator for SABR parameters from market vol quotes."""
+    
+    def __init__(
+        self,
+        beta: float = 0.5,
+        use_sigma_atm_param: bool = True
+    ):
+        """Initialize calibrator.
+        
+        Args:
+            beta: Fixed CEV exponent (typically 0, 0.5, or 1)
+            use_sigma_atm_param: If True, parameterize by sigma_atm
+        """
+    
+    def fit(
+        self,
+        quotes_df: pd.DataFrame,
+        F: float,
+        T: float,
+        shift: float = 0.0,
+        vol_type: str = "NORMAL"
+    ) -> CalibrationResult:
+        """Fit SABR parameters to market vol quotes.
+        
+        Args:
+            quotes_df: DataFrame with columns [strike, vol] or
+                [strike, vol, weight] for weighted calibration
+            F: Forward rate
+            T: Time to expiry in years
+            shift: Shift for negative rates
+            vol_type: "NORMAL" or "LOGNORMAL" for quote convention
+            
+        Returns:
+            CalibrationResult with fitted params, error, and diagnostics
+        """
+    
+    def fit_error(
+        self,
+        params: SabrParams,
+        quotes_df: pd.DataFrame,
+        F: float,
+        T: float
+    ) -> float:
+        """Compute calibration error (sum of squared vol differences)."""
+
+
+@dataclass
+class CalibrationResult:
+    """Result of SABR calibration."""
+    params: SabrParams          # Calibrated parameters
+    fit_error: float            # Total fit error
+    vol_errors: Dict[float, float]  # {strike: error}
+    success: bool               # Whether calibration converged
+    message: str                # Status message
+\end{lstlisting}
+
+\section{Options Module}
+
+\subsection{CapletPricer Class}
+
+\begin{lstlisting}
+class CapletPricer:
+    """Caplet pricing engine.
+    
+    Prices caplets using Bachelier or Black'76 model
+    with implied vol from SABR or direct input.
+    """
+    
+    def __init__(
+        self,
+        discount_curve: Curve,
+        projection_curve: Optional[Curve] = None
+    )
+    
+    def forward_rate(
+        self,
+        start: float,
+        end: float
+    ) -> float:
+        """Compute forward rate for period [start, end]."""
+    
+    def price(
+        self,
+        F: float,
+        K: float,
+        T: float,
+        df: float,
+        vol: float,
+        vol_type: str = "NORMAL",
+        notional: float = 1.0,
+        delta_t: float = 0.25,
+        is_cap: bool = True,
+        shift: float = 0.0
+    ) -> float:
+        """Price a caplet or floorlet.
+        
+        Args:
+            F: Forward rate
+            K: Strike rate
+            T: Time to expiry (option expiry)
+            df: Discount factor to payment
+            vol: Implied volatility
+            vol_type: "NORMAL" or "LOGNORMAL"
+            notional: Notional amount
+            delta_t: Accrual period (T_end - T_start)
+            is_cap: True for caplet, False for floorlet
+            shift: Shift for shifted lognormal
+            
+        Returns:
+            Caplet/floorlet price
+        """
+    
+    def greeks(
+        self,
+        F: float,
+        K: float,
+        T: float,
+        df: float,
+        vol: float,
+        vol_type: str = "NORMAL",
+        notional: float = 1.0,
+        delta_t: float = 0.25,
+        is_cap: bool = True
+    ) -> Dict[str, float]:
+        """Compute caplet Greeks.
+        
+        Returns:
+            Dict with delta, gamma, vega, theta
+        """
+    
+    def price_with_sabr(
+        self,
+        expiry: date,
+        tenor: str,
+        K: float,
+        sabr_params: SabrParams,
+        vol_type: str = "NORMAL",
+        notional: float = 1.0
+    ) -> float:
+        """Price caplet using SABR implied vol."""
+\end{lstlisting}
+
+\subsection{SwaptionPricer Class}
+
+\begin{lstlisting}
+class SwaptionPricer:
+    """Swaption pricing engine."""
+    
+    def __init__(
+        self,
+        discount_curve: Curve,
+        projection_curve: Optional[Curve] = None,
+        fixed_freq: int = 2,
+        float_freq: int = 4
+    ):
+        """Initialize swaption pricer.
+        
+        Args:
+            discount_curve: OIS curve for discounting
+            projection_curve: Curve for forward rates
+            fixed_freq: Fixed leg frequency (2 = semi-annual)
+            float_freq: Float leg frequency (4 = quarterly)
+        """
+    
+    def forward_swap_rate(
+        self,
+        expiry: float,
+        tenor: float
+    ) -> Tuple[float, float]:
+        """Compute forward swap rate and annuity.
+        
+        Args:
+            expiry: Time to option expiry (years)
+            tenor: Swap tenor from expiry (years)
+            
+        Returns:
+            Tuple of (forward_rate, annuity)
+        """
+    
+    def price(
+        self,
+        S: float,
+        K: float,
+        T: float,
+        annuity: float,
+        vol: float,
+        vol_type: str = "NORMAL",
+        payer_receiver: str = "PAYER",
+        notional: float = 1.0,
+        shift: float = 0.0
+    ) -> float:
+        """Price a swaption.
+        
+        Args:
+            S: Forward swap rate
+            K: Strike rate
+            T: Time to expiry
+            annuity: Swap annuity (PV01)
+            vol: Implied volatility
+            vol_type: "NORMAL" or "LOGNORMAL"
+            payer_receiver: "PAYER" or "RECEIVER"
+            notional: Notional amount
+            shift: Shift for shifted lognormal
+            
+        Returns:
+            Swaption price
+        """
+\end{lstlisting}
+
+\subsection{SabrOptionRisk Class}
+
+\begin{lstlisting}
+class SabrOptionRisk:
+    """SABR model-consistent risk calculator.
+    
+    Computes Greeks with smile-dynamics corrections.
+    """
+    
+    def __init__(
+        self,
+        vol_type: str = "NORMAL"
+    ):
+        """Initialize risk engine.
+        
+        Args:
+            vol_type: "NORMAL" or "LOGNORMAL" for base model
+        """
+    
+    def risk_report(
+        self,
+        F: float,
+        K: float,
+        T: float,
+        sabr_params: SabrParams,
+        annuity: float = 1.0,
+        is_call: bool = True,
+        notional: float = 1.0
+    ) -> RiskReport:
+        """Generate comprehensive risk report.
+        
+        Args:
+            F: Forward rate
+            K: Strike rate
+            T: Time to expiry (years)
+            sabr_params: Calibrated SABR parameters
+            annuity: Discount factor / annuity
+            is_call: True for call/payer, False for put/receiver
+            notional: Notional amount
+            
+        Returns:
+            RiskReport with all risk metrics
+        """
+    
+    def delta_decomposition(
+        self,
+        F: float,
+        K: float,
+        T: float,
+        sabr_params: SabrParams,
+        annuity: float = 1.0,
+        is_call: bool = True
+    ) -> Dict[str, float]:
+        """Decompose delta into components.
+        
+        Returns:
+            Dict with:
+            - delta_base: dV/dF at fixed vol
+            - delta_sideways: Smile adjustment (sticky moneyness)
+            - delta_backbone: ATM level effect (zero if sigma_atm fixed)
+            - delta_total: Sum of all components
+        """
+
+
+@dataclass
+class RiskReport:
+    """Container for SABR option risk metrics."""
+    
+    # Basic Greeks
+    delta_base: float        # Delta without smile adjustment
+    delta_sabr: float        # Model-consistent delta
+    gamma_base: float        # Base gamma
+    vega_atm: float          # Vega to ATM vol shift
+    
+    # Higher-order vol Greeks
+    vanna: float             # dDelta/dVol
+    volga: float             # dVega/dVol
+    
+    # Delta decomposition
+    delta_sideways: float    # Delta with fixed smile
+    delta_backbone: float    # Contribution from smile dynamics
+    
+    # Market data
+    forward: float
+    strike: float
+    expiry: float
+    implied_vol: float
+    vol_type: str
+    sabr_params: SabrParams
+    
+    def to_dict(self) -> Dict[str, float]
+\end{lstlisting}
+
+%===============================================================================
+% APPENDICES
+%===============================================================================
+\appendix
+
+\chapter{Mathematical Derivations}
+
+\section{Duration and Convexity}
+
+\subsection{Macaulay Duration}
+
+For a bond with cashflows $C_i$ at times $t_i$:
+\begin{equation}
+    D_{\text{Mac}} = \frac{\sum_{i=1}^{n} t_i \cdot C_i \cdot e^{-y t_i}}{\sum_{i=1}^{n} C_i \cdot e^{-y t_i}} = \frac{\sum_{i=1}^{n} t_i \cdot \pv(C_i)}{\pv}
+\end{equation}
+
+\subsection{Modified Duration}
+
+\begin{equation}
+    D_{\text{Mod}} = \frac{D_{\text{Mac}}}{1 + y/m}
+\end{equation}
+
+where $m$ is the compounding frequency.
+
+\subsection{Dollar Duration}
+
+\begin{equation}
+    \text{Dollar Duration} = D_{\text{Mod}} \times \pv
+\end{equation}
+
+\subsection{DV01 Derivation}
+
+\begin{equation}
+    \text{DV01} = \frac{\text{Dollar Duration}}{10{,}000} = \frac{D_{\text{Mod}} \times \pv}{10{,}000}
+\end{equation}
+
+\section{Nelson-Siegel-Svensson Derivation}
+
+\subsection{Factor Loadings}
+
+The NSS model can be written as:
+\begin{equation}
+    y(\tau) = \beta_0 L_0(\tau) + \beta_1 L_1(\tau) + \beta_2 L_2(\tau) + \beta_3 L_3(\tau)
+\end{equation}
+
+where the factor loadings are:
+\begin{align}
+    L_0(\tau) &= 1 \quad \text{(level)} \\
+    L_1(\tau) &= \frac{1-e^{-\tau/\lambda_1}}{\tau/\lambda_1} \quad \text{(slope)} \\
+    L_2(\tau) &= \frac{1-e^{-\tau/\lambda_1}}{\tau/\lambda_1} - e^{-\tau/\lambda_1} \quad \text{(curvature 1)} \\
+    L_3(\tau) &= \frac{1-e^{-\tau/\lambda_2}}{\tau/\lambda_2} - e^{-\tau/\lambda_2} \quad \text{(curvature 2)}
+\end{align}
+
+\subsection{Forward Rate Derivation}
+
+The instantaneous forward rate is:
+\begin{equation}
+    f(\tau) = y(\tau) + \tau \frac{dy}{d\tau}
+\end{equation}
+
+Taking the derivative:
+\begin{equation}
+    f(\tau) = \beta_0 + \beta_1 e^{-\tau/\lambda_1} + \beta_2 \frac{\tau}{\lambda_1} e^{-\tau/\lambda_1} + \beta_3 \frac{\tau}{\lambda_2} e^{-\tau/\lambda_2}
+\end{equation}
+
+\chapter{Glossary}
+
+\begin{description}[style=nextline]
+    \item[ACT/360] Day count convention using actual days divided by 360.
+    \item[ACT/365] Day count convention using actual days divided by 365.
+    \item[ACT/ACT] Day count convention using actual days divided by actual days in the year.
+    \item[Alpha ($\alpha$)] SABR instantaneous volatility parameter; controls overall vol level.
+    \item[Anchor Date] The valuation date from which all time calculations are measured.
+    \item[Backbone] The relationship between ATM volatility and forward level in SABR.
+    \item[Bachelier Model] Option pricing model assuming normal (arithmetic) dynamics; used for normal vol quoting.
+    \item[Beta ($\beta$)] SABR CEV exponent; $\beta=0$ is normal, $\beta=1$ is lognormal.
+    \item[Black'76 Model] Option pricing model for forwards/futures assuming lognormal dynamics.
+    \item[Bootstrap] Sequential curve construction method solving for discount factors one at a time.
+    \item[Caplet] A call option on a forward interest rate for a single period.
+    \item[Convexity] Second derivative of price with respect to yield.
+    \item[Discount Factor] Present value of \$1 to be received at a future date.
+    \item[DV01] Dollar Value of 01 basis point - price change for 1bp parallel shift.
+    \item[Expected Shortfall (ES)] Average loss given that VaR is exceeded; also called CVaR.
+    \item[Forward Rate] Interest rate agreed today for a future period.
+    \item[Hagan Approximation] Analytical formula for SABR implied volatility.
+    \item[Key-Rate Duration] Sensitivity to a shift at a specific curve tenor.
+    \item[Modified Duration] Percentage price sensitivity to yield changes.
+    \item[Nelson-Siegel-Svensson (NSS)] Parametric yield curve model with 6 parameters.
+    \item[Nu ($\nu$)] SABR volatility-of-volatility parameter.
+    \item[OIS] Overnight Index Swap - swap exchanging fixed rate for overnight rate.
+    \item[P\&L Attribution] Decomposition of profit/loss into explanatory components.
+    \item[Par Rate] Swap rate that makes the swap have zero initial value.
+    \item[Rho ($\rho$)] SABR correlation parameter between forward and volatility.
+    \item[Roll-down] P\&L from the position aging on an unchanged curve.
+    \item[SABR] Stochastic Alpha Beta Rho model for volatility smile dynamics.
+    \item[Shifted SABR] SABR variant allowing negative forwards via a shift parameter.
+    \item[Sideways] Component of smile dynamics from moneyness change at fixed ATM vol.
+    \item[Smile] The variation of implied volatility across strikes.
+    \item[Swaption] An option to enter into an interest rate swap.
+    \item[Vanna] Sensitivity of option value to correlation ($\partial V/\partial\rho$).
+    \item[VaR] Value at Risk - loss exceeded with specified probability.
+    \item[Vega] Sensitivity of option value to volatility.
+    \item[Volga] Sensitivity of option value to vol-of-vol ($\partial V/\partial\nu$).
+    \item[Zero Rate] Yield on a zero-coupon bond of given maturity.
+\end{description}
+
+\chapter{References}
+
+\begin{enumerate}
+    \item Nelson, C.R. and Siegel, A.F. (1987). ``Parsimonious Modeling of Yield Curves.'' \textit{Journal of Business}, 60(4), 473-489.
+    
+    \item Svensson, L.E.O. (1994). ``Estimating and Interpreting Forward Interest Rates: Sweden 1992-1994.'' \textit{IMF Working Paper} 94/114.
+    
+    \item Fabozzi, F.J. (2007). \textit{Fixed Income Analysis}. 2nd ed. Wiley.
+    
+    \item Hull, J.C. (2018). \textit{Options, Futures, and Other Derivatives}. 10th ed. Pearson.
+    
+    \item Jorion, P. (2007). \textit{Value at Risk: The New Benchmark for Managing Financial Risk}. 3rd ed. McGraw-Hill.
+    
+    \item Tuckman, B. and Serrat, A. (2011). \textit{Fixed Income Securities: Tools for Today's Markets}. 3rd ed. Wiley.
+    
+    \item Hagan, P.S., Kumar, D., Lesniewski, A.S., and Woodward, D.E. (2002). ``Managing Smile Risk.'' \textit{Wilmott Magazine}, September, 84-108.
+    
+    \item Hagan, P.S. and Woodward, D.E. (1999). ``Equivalent Black Volatilities.'' \textit{Applied Mathematical Finance}, 6(3), 147-157.
+    
+    \item Rebonato, R. (2004). \textit{Volatility and Correlation: The Perfect Hedger and the Fox}. 2nd ed. Wiley.
+    
+    \item Antonov, A. and Spector, M. (2012). ``Advanced Analytics for the SABR Model.'' \textit{SSRN Working Paper}.
+    
+    \item Bartlett, B. (2006). ``Hedging Under SABR Model.'' \textit{Wilmott Magazine}, July, 2-4.
+    
+    \item West, G. (2005). ``Calibration of the SABR Model in Illiquid Markets.'' \textit{Applied Mathematical Finance}, 12(4), 371-385.
+\end{enumerate}
+
+\end{document}

@@ -1,0 +1,47 @@
+"""
+VaR package - Value at Risk and Expected Shortfall.
+
+Provides:
+- Historical Simulation VaR/ES
+- Monte Carlo VaR/ES
+- Stressed VaR
+- Scenario analysis
+"""
+
+from .historical import (
+    HistoricalSimulation,
+    HistoricalVaRResult,
+    compute_historical_var,
+    compute_historical_es,
+)
+from .monte_carlo import (
+    MonteCarloVaR,
+    MonteCarloResult,
+    compute_mc_var,
+)
+from .stress import (
+    StressedVaR,
+    StressResult,
+)
+from .scenarios import (
+    ScenarioEngine,
+    Scenario,
+    ScenarioResult,
+    STANDARD_SCENARIOS,
+)
+
+__all__ = [
+    "HistoricalSimulation",
+    "HistoricalVaRResult",
+    "compute_historical_var",
+    "compute_historical_es",
+    "MonteCarloVaR",
+    "MonteCarloResult",
+    "compute_mc_var",
+    "StressedVaR",
+    "StressResult",
+    "ScenarioEngine",
+    "Scenario",
+    "ScenarioResult",
+    "STANDARD_SCENARIOS",
+]

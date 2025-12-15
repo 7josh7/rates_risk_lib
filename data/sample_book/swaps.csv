@@ -1,0 +1,8 @@
+# Sample Trading Book - Swap Details
+# Date: 2024-01-15
+# Additional details for swap positions
+
+swap_id,fixed_rate,fixed_frequency,fixed_day_count,float_index,float_frequency,float_day_count,notional_exchange,start_date,maturity_date
+IRS_2Y,0.0465,2,30/360,SOFR,4,ACT/360,FALSE,2024-01-17,2026-01-17
+IRS_5Y,0.0428,2,30/360,SOFR,4,ACT/360,FALSE,2024-01-17,2029-01-17
+IRS_10Y,0.0415,2,30/360,SOFR,4,ACT/360,FALSE,2024-01-17,2034-01-17
