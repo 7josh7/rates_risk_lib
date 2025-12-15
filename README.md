@@ -36,6 +36,18 @@ A comprehensive Python library for USD yield curve construction, fixed-income in
 - Formatted console output
 - CSV export for downstream systems
 
+### Interactive Dashboards
+- **Real-Time Risk Monitor**: Shiny-based dashboard for live risk monitoring
+- **Interactive Analytics Dashboard**: Comprehensive Streamlit dashboard covering ALL library functionality
+  - Curve visualization and analysis
+  - Interactive pricing calculators
+  - Risk metrics with visual breakdowns
+  - VaR/ES analysis with distributions
+  - Scenario analysis with waterfall charts
+  - P&L attribution decomposition
+  - Liquidity risk (LVaR) calculations
+  - Data explorer and export
+
 ## Installation
 
 ```bash
@@ -114,6 +126,43 @@ This will:
 6. Generate scenario analysis
 7. Output formatted reports and CSV files
 
+## Interactive Dashboards
+
+Two interactive dashboards are provided for visualization:
+
+### 1. Real-Time Risk Monitor (Shiny)
+```bash
+cd dashboard
+pip install -r requirements.txt
+shiny run app.py --reload
+```
+
+Features:
+- Real-time portfolio monitoring
+- Key Rate DV01 visualization
+- VaR/ES metrics display
+- Risk limit tracking
+- Position-level details
+
+### 2. Interactive Analytics Dashboard (Streamlit)
+```bash
+cd dashboard
+pip install -r requirements_interactive.txt
+streamlit run interactive_dashboard.py
+```
+
+**Comprehensive coverage of ALL library functionality:**
+- **📈 Curves**: OIS bootstrap, Treasury NSS, curve comparison, discount factors, forward rates
+- **💰 Pricing**: Interactive calculators for bonds, swaps, and futures
+- **📊 Risk Metrics**: DV01, Key Rate ladders, convexity analysis
+- **🎯 VaR Analysis**: Historical, Monte Carlo, Stressed VaR with distribution plots
+- **📉 Scenarios**: Standard scenarios, waterfall charts, custom scenario builder
+- **💵 P&L Attribution**: Carry, rolldown, curve moves, convexity breakdown
+- **💧 Liquidity Risk**: LVaR calculations, bid-ask impacts, holding period scaling
+- **📋 Data Explorer**: Browse market data, positions, curve nodes, export to CSV
+
+See `dashboard/README.md` for detailed dashboard documentation.
+
 ## Project Structure
 
 ```
@@ -157,8 +206,15 @@ rates_risk_lib/
 ├── data/
 │   ├── sample_quotes/         # Market data samples
 │   └── sample_book/           # Position data samples
+├── dashboard/
+│   ├── app.py                 # Real-time risk monitor (Shiny)
+│   ├── interactive_dashboard.py  # Interactive analytics (Streamlit)
+│   ├── requirements.txt       # Shiny dependencies
+│   ├── requirements_interactive.txt  # Streamlit dependencies
+│   └── README.md              # Dashboard documentation
 ├── scripts/
-│   └── run_demo.py            # Demo script
+│   ├── run_demo.py            # Demo script
+│   └── run_sabr_demo.py       # SABR/options demo
 ├── tests/
 │   ├── test_conventions.py
 │   ├── test_dates.py
