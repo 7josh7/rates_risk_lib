@@ -56,16 +56,20 @@ class ScenarioResult:
         scenario_pv: PV after scenario
         pnl: P&L from scenario
         contributors: Top contributors to P&L (by key rate)
+        curve_params: Curve parameters used (e.g., NSS params)
+        sabr_params: SABR parameters used (summary or full)
     """
     scenario: Scenario
     base_pv: float
     scenario_pv: float
     pnl: float
     contributors: Dict[str, float] = field(default_factory=dict)
+    curve_params: Optional[Dict[str, Any]] = field(default_factory=dict)
+    sabr_params: Optional[Dict[str, Any]] = field(default_factory=dict)
     
     def to_dict(self) -> Dict:
         """Convert to dictionary."""
-        return {
+        result = {
             "scenario_name": self.scenario.name,
             "description": self.scenario.description,
             "base_pv": self.base_pv,
@@ -73,6 +77,11 @@ class ScenarioResult:
             "pnl": self.pnl,
             "contributors": self.contributors
         }
+        if self.curve_params:
+            result["curve_params"] = self.curve_params
+        if self.sabr_params:
+            result["sabr_params"] = self.sabr_params
+        return result
 
 
 # Standard scenario definitions
@@ -496,6 +505,42 @@ def apply_named_market_regime(market_state: MarketState, regime: str) -> MarketS
     )
 
 
+def extract_market_state_params(market_state: MarketState) -> Dict[str, Any]:
+    """
+    Extract curve and SABR parameters from MarketState for auditability.
+    
+    Returns:
+        Dict with 'curve_metadata', 'sabr_params_summary', 'sabr_diagnostics'
+    """
+    result: Dict[str, Any] = {}
+    
+    # Curve metadata (may include NSS params)
+    if market_state.curve.metadata:
+        result["curve_metadata"] = dict(market_state.curve.metadata)
+    
+    # SABR parameters summary
+    if market_state.sabr_surface:
+        sabr_summary = {}
+        for bucket, params in market_state.sabr_surface.params_by_bucket.items():
+            sabr_summary[f"{bucket[0]}x{bucket[1]}"] = {
+                "sigma_atm": params.sigma_atm,
+                "nu": params.nu,
+                "rho": params.rho,
+                "beta": params.beta,
+                "shift": params.shift,
+            }
+        result["sabr_params"] = sabr_summary
+        
+        # Include diagnostics table
+        result["sabr_diagnostics"] = market_state.sabr_surface.diagnostics_table()
+        
+        # Convention info
+        if market_state.sabr_surface.convention:
+            result["sabr_convention"] = dict(market_state.sabr_surface.convention)
+    
+    return result
+
+
 __all__ = [
     "Scenario",
     "ScenarioResult",
@@ -504,6 +549,7 @@ __all__ = [
     "create_custom_scenario",
     "apply_market_scenario",
     "apply_named_market_regime",
+    "extract_market_state_params",
     "SabrShock",
     "SABR_STRESS_REGIMES",
 ]

@@ -423,6 +423,7 @@ class SabrModel:
         K: float,
         T: float,
         params: SabrParams,
+        vol_type: str = "BLACK",
         hold_atm_fixed: bool = True
     ) -> float:
         """
@@ -438,6 +439,7 @@ class SabrModel:
             K: Strike
             T: Time to expiry
             params: SABR parameters
+            vol_type: "BLACK" or "NORMAL"
             hold_atm_fixed: If True, backbone term is zero
             
         Returns:
@@ -447,17 +449,29 @@ class SabrModel:
         F_s = F + params.shift
         eps = F_s * 1e-5
         
+        vol_type_upper = vol_type.upper()
+        
         if hold_atm_fixed:
             # Sideways only: bump F, keep alpha fixed (sigma_atm fixed)
-            vol_up = hagan_black_vol(F + eps, K, T, alpha, params.beta, params.rho, params.nu, params.shift)
-            vol_down = hagan_black_vol(F - eps, K, T, alpha, params.beta, params.rho, params.nu, params.shift)
+            if vol_type_upper == "NORMAL":
+                vol_fn = hagan_normal_vol
+            else:
+                vol_fn = hagan_black_vol
+            
+            vol_up = vol_fn(F + eps, K, T, alpha, params.beta, params.rho, params.nu, params.shift)
+            vol_down = vol_fn(F - eps, K, T, alpha, params.beta, params.rho, params.nu, params.shift)
             return (vol_up - vol_down) / (2 * eps)
         else:
             # Full derivative including backbone
             # Need to recalibrate alpha when F changes
-            vol_base = self.implied_vol_black(F, K, T, params)
-            vol_up = self.implied_vol_black(F + eps, K, T, params)
-            vol_down = self.implied_vol_black(F - eps, K, T, params)
+            if vol_type_upper == "NORMAL":
+                vol_base = self.implied_vol_normal(F, K, T, params)
+                vol_up = self.implied_vol_normal(F + eps, K, T, params)
+                vol_down = self.implied_vol_normal(F - eps, K, T, params)
+            else:
+                vol_base = self.implied_vol_black(F, K, T, params)
+                vol_up = self.implied_vol_black(F + eps, K, T, params)
+                vol_down = self.implied_vol_black(F - eps, K, T, params)
             return (vol_up - vol_down) / (2 * eps)
     
     def dsigma_drho(
@@ -581,3 +595,56 @@ class SabrModel:
             else:
                 result[K] = self.implied_vol_normal(F, K, T, params)
         return result
+    
+    def dsigma_dsigma_atm(
+        self,
+        F: float,
+        K: float,
+        T: float,
+        params: SabrParams,
+        vol_type: str = "BLACK",
+        bump_size: float = 0.0001
+    ) -> float:
+        """
+        Derivative of implied vol at strike K w.r.t. sigma_ATM.
+        
+        Uses finite difference: bump sigma_atm, recompute sigma(F,K), and compute slope.
+        This is the key sensitivity for vega to ATM vol parameter.
+        
+        Args:
+            F: Forward rate
+            K: Strike
+            T: Time to expiry
+            params: SABR parameters
+            vol_type: "BLACK" or "NORMAL"
+            bump_size: Size of sigma_atm bump (default 1bp = 0.0001)
+            
+        Returns:
+            d_sigma(F,K) / d_sigma_atm
+        """
+        vol_type_upper = vol_type.upper()
+        
+        # Base vol at strike K
+        if vol_type_upper == "NORMAL":
+            vol_base = self.implied_vol_normal(F, K, T, params)
+        else:
+            vol_base = self.implied_vol_black(F, K, T, params)
+        
+        # Bump sigma_atm up
+        params_up = SabrParams(
+            sigma_atm=params.sigma_atm + bump_size,
+            beta=params.beta,
+            rho=params.rho,
+            nu=params.nu,
+            shift=params.shift
+        )
+        
+        if vol_type_upper == "NORMAL":
+            vol_up = self.implied_vol_normal(F, K, T, params_up)
+        else:
+            vol_up = self.implied_vol_black(F, K, T, params_up)
+        
+        # Compute derivative
+        dsigma_dsigma_atm = (vol_up - vol_base) / bump_size
+        
+        return dsigma_dsigma_atm
