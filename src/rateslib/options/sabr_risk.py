@@ -134,9 +134,9 @@ class SabrOptionRisk:
         vega_base = base_greeks['vega']
         
         # SABR vol sensitivities
-        dsigma_dF = self.model.dsigma_dF(F, K, T, sabr_params)
-        dsigma_drho = self.model.dsigma_drho(F, K, T, sabr_params)
-        dsigma_dnu = self.model.dsigma_dnu(F, K, T, sabr_params)
+        dsigma_dF = self.model.dsigma_dF(F, K, T, sabr_params, vol_type=self.vol_type)
+        dsigma_drho = self.model.dsigma_drho(F, K, T, sabr_params, vol_type=self.vol_type)
+        dsigma_dnu = self.model.dsigma_dnu(F, K, T, sabr_params, vol_type=self.vol_type)
         
         # Model-consistent delta
         # Delta_SABR = Delta_base + Vega * dSigma/dF

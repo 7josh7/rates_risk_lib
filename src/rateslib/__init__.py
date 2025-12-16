@@ -56,6 +56,14 @@ from .reporting import RiskReport, ReportFormatter, export_to_csv
 # Liquidity
 from .liquidity import LiquidityEngine, LiquidityAdjustedVaR
 
+# Market State
+from .market_state import (
+    CurveState,
+    SabrSurface,
+    MarketState,
+    build_sabr_surface_from_quotes,
+)
+
 # Volatility (SABR)
 from .vol import (
     SabrParams,
@@ -127,6 +135,11 @@ __all__ = [
     # Liquidity
     "LiquidityEngine",
     "LiquidityAdjustedVaR",
+    # Market State
+    "CurveState",
+    "SabrSurface",
+    "MarketState",
+    "build_sabr_surface_from_quotes",
     # Volatility (SABR)
     "SabrParams",
     "SabrModel",
