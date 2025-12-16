@@ -134,9 +134,9 @@ class SabrOptionRisk:
         vega_base = base_greeks['vega']
         
         # SABR vol sensitivities
-        dsigma_dF = self.model.dsigma_dF(F, K, T, sabr_params)
-        dsigma_drho = self.model.dsigma_drho(F, K, T, sabr_params)
-        dsigma_dnu = self.model.dsigma_dnu(F, K, T, sabr_params)
+        dsigma_dF = self.model.dsigma_dF(F, K, T, sabr_params, vol_type=self.vol_type)
+        dsigma_drho = self.model.dsigma_drho(F, K, T, sabr_params, vol_type=self.vol_type)
+        dsigma_dnu = self.model.dsigma_dnu(F, K, T, sabr_params, vol_type=self.vol_type)
         
         # Model-consistent delta
         # Delta_SABR = Delta_base + Vega * dSigma/dF
@@ -159,18 +159,11 @@ class SabrOptionRisk:
         
         volga = (greeks_up['vega'] - greeks_dn['vega']) / (2 * vol_bump)
         
-        # Vega ATM (parallel shift in ATM vol)
+        # Vega to sigma_ATM (parallel shift in ATM vol parameter)
         # This is vega to sigma_ATM via chain rule: dV/d(sigma_ATM) = dV/d(sigma) * d(sigma)/d(sigma_ATM)
-        # At ATM, dsigma/dsigma_ATM ≈ 1
-        F_atm = F
-        if self.vol_type == "NORMAL":
-            sigma_atm = self.model.implied_vol_normal(F, F_atm, T, sabr_params)
-            atm_greeks = bachelier_greeks(F, F_atm, T, sigma_atm, annuity, is_call)
-        else:
-            sigma_atm = self.model.implied_vol_black(F, F_atm, T, sabr_params)
-            atm_greeks = black76_greeks(F, F_atm, T, sigma_atm, annuity, is_call)
-        
-        vega_atm = atm_greeks['vega']
+        # where dV/d(sigma) is the base vega, and d(sigma)/d(sigma_ATM) is computed via finite difference
+        dsigma_dsigma_atm = self.model.dsigma_dsigma_atm(F, K, T, sabr_params, vol_type=self.vol_type)
+        vega_atm = vega_base * dsigma_dsigma_atm
         
         # Delta decomposition: sideways vs backbone
         # Sideways delta: move spot, keep smile fixed relative to spot
@@ -331,16 +324,18 @@ class SabrOptionRisk:
         dsigma_drho = self.model.dsigma_drho(F, K, T, sabr_params, vol_type=self.vol_type)
         dsigma_dnu = self.model.dsigma_dnu(F, K, T, sabr_params, vol_type=self.vol_type)
         
-        # dV/d(sigma_atm) ≈ Vega at ATM (for ATM, d_sigma/d_sigma_atm ≈ 1)
-        # For off-ATM, need chain rule through alpha
-        dalpha_dsigma = self.model.dalpha_dsigma_atm(F, T, sabr_params)
+        # dV/d(sigma_atm) via proper chain rule:
+        # dV/d(sigma_atm) = dV/d(sigma) * d(sigma)/d(sigma_atm)
+        # where dV/d(sigma) = vega and d(sigma)/d(sigma_atm) is computed via finite difference
+        dsigma_dsigma_atm = self.model.dsigma_dsigma_atm(F, K, T, sabr_params, vol_type=self.vol_type)
         
         return {
             'dV_drho': notional * vega * dsigma_drho,
             'dV_dnu': notional * vega * dsigma_dnu,
-            'dV_dsigma_atm': notional * vega * dalpha_dsigma,
+            'dV_dsigma_atm': notional * vega * dsigma_dsigma_atm,
             'dsigma_drho': dsigma_drho,
             'dsigma_dnu': dsigma_dnu,
+            'dsigma_dsigma_atm': dsigma_dsigma_atm,
             'vega': notional * vega
         }
 
