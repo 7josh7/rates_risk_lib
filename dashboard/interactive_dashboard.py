@@ -45,6 +45,12 @@ from rateslib import (
     PnLAttributionEngine, PnLAttribution,
     # Liquidity
     LiquidityEngine, LiquidityAdjustedVaR,
+    # Market State
+    CurveState, SabrSurface, MarketState, build_sabr_surface_from_quotes,
+    # SABR & Options
+    SabrParams, SabrModel, SabrCalibrator, load_vol_quotes,
+    SwaptionPricer, CapletPricer, SabrOptionRisk,
+    bachelier_call, bachelier_put, black76_call, black76_put,
     # Conventions
     DayCount, Conventions,
     DateUtils,
@@ -139,6 +145,16 @@ def load_positions():
     return pd.read_csv(paths["book"] / "positions.csv", comment="#")
 
 
+@st.cache_data
+def load_vol_quotes_data():
+    """Load volatility quotes for SABR calibration."""
+    paths = get_data_paths()
+    vol_quotes_path = paths["data"] / "vol_quotes.csv"
+    if vol_quotes_path.exists():
+        return pd.read_csv(vol_quotes_path, comment="#")
+    return None
+
+
 @st.cache_resource
 def build_ois_curve(valuation_date, quotes_df):
     """Build OIS discount curve using bootstrap."""
@@ -171,6 +187,75 @@ def build_treasury_curve(valuation_date, quotes_df):
     curve = nss.to_curve(tenors=[0.25, 0.5, 1, 2, 3, 5, 7, 10, 15, 20, 30])
     
     return curve, nss
+
+
+@st.cache_resource
+def build_sabr_surface(vol_quotes_df, projection_curve, valuation_date):
+    """Build SABR surface from vol quotes."""
+    if vol_quotes_df is None or len(vol_quotes_df) == 0:
+        return None
+    
+    # Compute forward swap rates for each bucket
+    forward_rates = {}
+    swaption_pricer = SwaptionPricer(projection_curve, projection_curve)
+    
+    # Get unique expiry/tenor combinations
+    buckets = vol_quotes_df.groupby(['expiry', 'underlying_tenor']).first().reset_index()
+    
+    for _, row in buckets.iterrows():
+        expiry_str = row['expiry']
+        tenor_str = row['underlying_tenor']
+        
+        # Parse tenors to years
+        expiry_years = DateUtils.tenor_to_years(expiry_str)
+        tenor_years = DateUtils.tenor_to_years(tenor_str)
+        
+        # Compute forward swap rate
+        forward, _ = swaption_pricer.forward_swap_rate(expiry_years, tenor_years)
+        forward_rates[(expiry_str, tenor_str)] = forward
+    
+    # Build SABR surface
+    surface = build_sabr_surface_from_quotes(
+        vol_quotes_df,
+        forward_rates,
+        beta=0.5,
+        vol_type="NORMAL"
+    )
+    
+    return surface
+
+
+@st.cache_resource
+def build_market_state(valuation_date, ois_curve, treasury_curve, nss_model, vol_quotes_df):
+    """Build complete market state with curves and SABR surface."""
+    # Get NSS parameters
+    nss_params = None
+    if nss_model is not None:
+        nss_params = {
+            'beta0': nss_model.params.beta0,
+            'beta1': nss_model.params.beta1,
+            'beta2': nss_model.params.beta2,
+            'beta3': nss_model.params.beta3,
+            'lambda1': nss_model.params.lambda1,
+            'lambda2': nss_model.params.lambda2
+        }
+    
+    # Build SABR surface if vol quotes available
+    sabr_surface = None
+    if vol_quotes_df is not None:
+        sabr_surface = build_sabr_surface(vol_quotes_df, ois_curve, valuation_date)
+    
+    # Create market state
+    market_state = MarketState.from_curves_and_sabr(
+        valuation_date=valuation_date,
+        discount_curve=ois_curve,
+        sabr_surface=sabr_surface,
+        projection_curve=ois_curve,
+        treasury_curve=treasury_curve,
+        nss_params=nss_params
+    )
+    
+    return market_state
 
 
 # =============================================================================
@@ -457,16 +542,22 @@ def main():
         treasury_quotes = load_treasury_quotes()
         historical_rates = load_historical_rates()
         positions_df = load_positions()
+        vol_quotes_df = load_vol_quotes_data()
     
     # Build curves
     with st.spinner('Building yield curves...'):
         ois_curve = build_ois_curve(valuation_date, ois_quotes)
         treasury_curve, nss_model = build_treasury_curve(valuation_date, treasury_quotes)
     
+    # Build market state
+    with st.spinner('Building market state...'):
+        market_state = build_market_state(valuation_date, ois_curve, treasury_curve, nss_model, vol_quotes_df)
+    
     # Create tabs for different sections
-    tab1, tab2, tab3, tab4, tab5, tab6, tab7, tab8 = st.tabs([
+    tab1, tab2, tab3, tab4, tab5, tab6, tab7, tab8, tab9 = st.tabs([
         "📈 Curves",
         "💰 Pricing",
+        "🎲 Options & SABR",
         "📊 Risk Metrics",
         "🎯 VaR Analysis",
         "📉 Scenarios",
@@ -635,9 +726,206 @@ def main():
                 col3.metric("DV01 (total)", f"${dv01:,.2f}")
     
     # =========================================================================
-    # TAB 3: Risk Metrics
+    # TAB 3: Options & SABR
     # =========================================================================
     with tab3:
+        st.header("🎲 Options & SABR Volatility Surface")
+        
+        if not market_state.has_sabr_surface():
+            st.warning("⚠️ No SABR surface available. Vol quotes not loaded.")
+            st.info("To enable SABR pricing, ensure vol_quotes.csv is available in data directory.")
+        else:
+            # SABR Surface Overview
+            st.subheader("SABR Surface Calibration")
+            
+            sabr_surface = market_state.sabr_surface
+            buckets = sabr_surface.list_buckets()
+            
+            col1, col2, col3 = st.columns(3)
+            col1.metric("Total Buckets", len(buckets))
+            col2.metric("Beta (Fixed)", f"{sabr_surface.beta:.2f}")
+            col3.metric("Vol Type", sabr_surface.vol_type)
+            
+            if sabr_surface.fallback_buckets:
+                st.warning(f"⚠️ {len(sabr_surface.fallback_buckets)} bucket(s) using fallback parameters (calibration failed)")
+            
+            # Display SABR parameters per bucket
+            st.subheader("SABR Parameters by Bucket")
+            
+            params_data = []
+            for (expiry, tenor) in buckets:
+                params = sabr_surface.get_params(expiry, tenor)
+                diagnostics = sabr_surface.get_diagnostics(expiry, tenor)
+                
+                row = {
+                    'Expiry': expiry,
+                    'Tenor': tenor,
+                    'σ_ATM': f"{params.sigma_atm:.4f}",
+                    'β': f"{params.beta:.2f}",
+                    'ρ': f"{params.rho:.3f}",
+                    'ν': f"{params.nu:.3f}",
+                    'Shift': f"{params.shift:.4f}",
+                    'Fallback': '❌' if (expiry, tenor) in sabr_surface.fallback_buckets else '✓'
+                }
+                
+                if diagnostics:
+                    row['RMSE'] = f"{diagnostics.fit_error:.6f}"
+                    row['Success'] = '✓' if diagnostics.success else '❌'
+                
+                params_data.append(row)
+            
+            params_df = pd.DataFrame(params_data)
+            st.dataframe(params_df, use_container_width=True)
+            
+            # Swaption Pricing
+            st.subheader("Swaption Pricing")
+            
+            col1, col2, col3 = st.columns(3)
+            with col1:
+                swaption_expiry_str = st.selectbox("Option Expiry", ["1Y", "2Y", "5Y", "10Y"], index=0)
+                swaption_tenor_str = st.selectbox("Swap Tenor", ["5Y", "10Y"], index=0)
+                swaption_type = st.selectbox("Type", ["PAYER", "RECEIVER"], index=0)
+            
+            with col2:
+                swaption_strike = st.number_input("Strike (%)", value=4.5, min_value=0.0, max_value=20.0, step=0.1) / 100
+                swaption_notional = st.number_input("Notional ($M)", value=10.0, min_value=0.1, step=1.0) * 1_000_000
+            
+            with col3:
+                st.write("")  # Spacing
+            
+            if st.button("Price Swaption"):
+                # Get SABR params for this bucket
+                sabr_params = market_state.get_sabr_params(swaption_expiry_str, swaption_tenor_str)
+                
+                if sabr_params is None:
+                    st.error(f"No SABR parameters available for {swaption_expiry_str} × {swaption_tenor_str}")
+                else:
+                    # Parse tenors
+                    expiry_years = DateUtils.tenor_to_years(swaption_expiry_str)
+                    tenor_years = DateUtils.tenor_to_years(swaption_tenor_str)
+                    
+                    # Create swaption pricer
+                    pricer = SwaptionPricer(
+                        discount_curve=market_state.discount_curve,
+                        projection_curve=market_state.projection_curve
+                    )
+                    
+                    # Get forward swap rate and annuity
+                    forward, annuity = pricer.forward_swap_rate(expiry_years, tenor_years)
+                    
+                    # Price swaption using SABR
+                    sabr_model = SabrModel()
+                    implied_vol = sabr_model.implied_vol_normal(forward, swaption_strike, expiry_years, sabr_params)
+                    
+                    # Use Bachelier for NORMAL vol
+                    is_call = (swaption_type == "PAYER")
+                    if is_call:
+                        option_value = bachelier_call(forward, swaption_strike, expiry_years, implied_vol, annuity)
+                    else:
+                        option_value = bachelier_put(forward, swaption_strike, expiry_years, implied_vol, annuity)
+                    
+                    swaption_price = option_value * swaption_notional
+                    
+                    # Compute Greeks
+                    risk_engine = SabrOptionRisk(vol_type="NORMAL")
+                    risk_report = risk_engine.risk_report(
+                        F=forward,
+                        K=swaption_strike,
+                        T=expiry_years,
+                        sabr_params=sabr_params,
+                        annuity=annuity,
+                        is_call=is_call,
+                        notional=swaption_notional
+                    )
+                    
+                    # Display results
+                    st.success("✅ Swaption priced successfully")
+                    
+                    col1, col2, col3, col4 = st.columns(4)
+                    col1.metric("Price", f"${swaption_price:,.2f}")
+                    col2.metric("Forward Rate", f"{forward*100:.4f}%")
+                    col3.metric("Implied Vol (bps)", f"{implied_vol*10000:.2f}")
+                    col4.metric("Annuity", f"{annuity:.6f}")
+                    
+                    st.subheader("Greeks")
+                    col1, col2, col3 = st.columns(3)
+                    col1.metric("Delta (Base)", f"${risk_report.delta_base:,.2f}")
+                    col2.metric("Delta (SABR)", f"${risk_report.delta_sabr:,.2f}")
+                    col3.metric("Gamma", f"${risk_report.gamma_base:,.2f}")
+                    
+                    col1, col2, col3 = st.columns(3)
+                    col1.metric("Vega (ATM)", f"${risk_report.vega_atm:,.2f}")
+                    col2.metric("Vanna", f"${risk_report.vanna:,.2f}")
+                    col3.metric("Volga", f"${risk_report.volga:,.2f}")
+                    
+                    st.subheader("Delta Decomposition")
+                    delta_decomp_df = pd.DataFrame([{
+                        'Component': 'Sideways',
+                        'Value': f"${risk_report.delta_sideways:,.2f}",
+                        'Contribution': f"{risk_report.delta_sideways / (abs(risk_report.delta_sabr) + 1e-10) * 100:.1f}%"
+                    }, {
+                        'Component': 'Backbone (Smile)',
+                        'Value': f"${risk_report.delta_backbone:,.2f}",
+                        'Contribution': f"{risk_report.delta_backbone / (abs(risk_report.delta_sabr) + 1e-10) * 100:.1f}%"
+                    }])
+                    st.dataframe(delta_decomp_df, use_container_width=True)
+            
+            # Volatility Smile Visualization
+            st.subheader("Volatility Smile")
+            
+            bucket_selector = st.selectbox(
+                "Select Bucket",
+                [f"{e} × {t}" for (e, t) in buckets],
+                index=0 if buckets else None
+            )
+            
+            if bucket_selector and buckets:
+                expiry_sel, tenor_sel = bucket_selector.split(' × ')
+                sabr_params = market_state.get_sabr_params(expiry_sel, tenor_sel)
+                
+                if sabr_params:
+                    # Compute forward rate
+                    expiry_years = DateUtils.tenor_to_years(expiry_sel)
+                    tenor_years = DateUtils.tenor_to_years(tenor_sel)
+                    
+                    pricer = SwaptionPricer(market_state.discount_curve, market_state.projection_curve)
+                    forward, _ = pricer.forward_swap_rate(expiry_years, tenor_years)
+                    
+                    # Generate strikes around forward
+                    strike_range = forward * 0.5  # ±50% around forward
+                    strikes = np.linspace(max(forward - strike_range, 0.001), forward + strike_range, 50)
+                    
+                    # Compute implied vols
+                    sabr_model = SabrModel()
+                    vols = [sabr_model.implied_vol_normal(forward, K, expiry_years, sabr_params) for K in strikes]
+                    
+                    # Plot
+                    fig = go.Figure()
+                    fig.add_trace(go.Scatter(
+                        x=strikes * 100,
+                        y=np.array(vols) * 10000,
+                        mode='lines',
+                        name='SABR Smile',
+                        line=dict(color='blue', width=2)
+                    ))
+                    
+                    fig.add_vline(x=forward * 100, line_dash="dash", line_color="red",
+                                 annotation_text="ATM")
+                    
+                    fig.update_layout(
+                        title=f"SABR Volatility Smile: {expiry_sel} × {tenor_sel}",
+                        xaxis_title="Strike (%)",
+                        yaxis_title="Normal Vol (bps)",
+                        hovermode='x unified',
+                        height=400
+                    )
+                    
+                    st.plotly_chart(fig, use_container_width=True)
+    
+    # =========================================================================
+    # TAB 4 (Risk Metrics): Risk Metrics
+    # =========================================================================
+    with tab4:
         st.header("Risk Metrics")
         
         # Portfolio-level metrics
@@ -693,9 +981,9 @@ def main():
             st.info("Convexity measures the curvature of price-yield relationship")
     
     # =========================================================================
-    # TAB 4: VaR Analysis
+    # TAB 5 (VaR): VaR Analysis
     # =========================================================================
-    with tab4:
+    with tab5:
         st.header("Value at Risk (VaR) Analysis")
         
         var_method = st.selectbox("VaR Method", 
@@ -761,9 +1049,9 @@ def main():
             col2.metric("Stressed VaR 99%", f"${stressed_var_99:,.0f}")
     
     # =========================================================================
-    # TAB 5: Scenarios
+    # TAB 6 (Scenarios): Scenarios
     # =========================================================================
-    with tab5:
+    with tab6:
         st.header("Scenario Analysis")
         
         st.write("Impact of standardized market scenarios on portfolio P&L")
@@ -810,9 +1098,9 @@ def main():
             st.metric("Estimated P&L", f"${custom_pnl:,.2f}")
     
     # =========================================================================
-    # TAB 6: P&L Attribution
+    # TAB 7 (PTAB 6:L): P&L Attribution
     # =========================================================================
-    with tab6:
+    with tab7:
         st.header("P&L Attribution")
         
         st.write("""
@@ -865,9 +1153,9 @@ def main():
         )
     
     # =========================================================================
-    # TAB 7: Liquidity Risk
+    # TAB 8 (Liquidity): Liquidity Risk
     # =========================================================================
-    with tab7:
+    with tab8:
         st.header("Liquidity-Adjusted VaR (LVaR)")
         
         st.write("""
@@ -940,9 +1228,9 @@ def main():
         st.dataframe(liquidity_df, use_container_width=True)
     
     # =========================================================================
-    # TAB 8: Data Explorer
+    # TAB 9 (Data): Data Explorer
     # =========================================================================
-    with tab8:
+    with tab9:
         st.header("Data Explorer")
         
         data_view = st.selectbox("Select Data View",
