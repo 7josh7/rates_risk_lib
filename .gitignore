@@ -42,3 +42,9 @@ output/*.pdf
 
 # Dashboard cache
 dashboard/__pycache__/
+
+# Test cache
+tests/__pycache__/
+.pytest_cache/
+.coverage
+htmlcov/
