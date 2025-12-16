@@ -141,23 +141,6 @@ def load_positions():
     """Load portfolio positions."""
     paths = get_data_paths()
     df = pd.read_csv(paths["book"] / "positions.csv", comment="#")
-    # Append a default ATM payer swaption to ensure options coverage in demo views
-    default_swaption = {
-        "position_id": "POSOPT1",
-        "instrument_type": "SWAPTION",
-        "instrument_id": "SWPT_1Y5Y",
-        "notional": 5_000_000,
-        "direction": "PAYER",
-        "maturity_date": "",
-        "coupon": 0.0,
-        "entry_date": "",
-        "entry_price": 0.0,
-        "expiry_tenor": "1Y",
-        "swap_tenor": "5Y",
-        "strike": "ATM",
-        "vol_type": "NORMAL",
-    }
-    df = pd.concat([df, pd.DataFrame([default_swaption])], ignore_index=True)
     return df
 
 
@@ -1741,84 +1724,6 @@ def main():
             nodes_df = pd.DataFrame(nodes_data)
             st.dataframe(nodes_df, width="stretch")
     
-    # Footer with checklist compliance summary
-    st.markdown("---")
-    st.markdown("## 📋 Compliance Summary")
-    st.markdown("""
-    This dashboard satisfies the comprehensive **50-item checklist** for a production-like 
-    rates + options risk platform:
-    """)
-    
-    col1, col2, col3 = st.columns(3)
-    
-    with col1:
-        st.markdown("### ✅ Architecture")
-        st.markdown("""
-        - MarketState abstraction
-        - Curve/SABR separation
-        - No circular dependencies
-        - Clean pricing dispatcher
-        """)
-    
-    with col2:
-        st.markdown("### ✅ SABR & Options")
-        st.markdown("""
-        - Bucketed calibration
-        - Parameter bounds enforced
-        - Greeks implemented
-        - Fallback behavior visible
-        """)
-    
-    with col3:
-        st.markdown("### ✅ Risk & VaR")
-        st.markdown("""
-        - DV01, key-rate, convexity
-        - VaR/ES with tail analysis
-        - Nu/Rho stress scenarios
-        - Comprehensive limits
-        """)
-    
-    col1, col2, col3 = st.columns(3)
-    
-    with col1:
-        st.markdown("### ✅ Scenarios")
-        st.markdown("""
-        - Curve-only shocks
-        - Vol-only shocks
-        - Combined verification
-        - Explicit definitions
-        """)
-    
-    with col2:
-        st.markdown("### ✅ P&L Attribution")
-        st.markdown("""
-        - Linear products
-        - Options (vol P&L)
-        - Cross-gamma handling
-        - Residual tracking
-        """)
-    
-    with col3:
-        st.markdown("### ✅ Transparency")
-        st.markdown("""
-        - NSS parameters shown
-        - SABR params per bucket
-        - Scenario definitions
-        - Fallback indicators
-        """)
-    
-    st.success("""
-    **✓ System faithfully mimics a real rates + options desk risk platform**  
-    With correct separation of curve, volatility, and tail risk (checklist success criterion).
-    """)
-    
-    st.markdown("""
-    <div style='text-align: center; color: gray; margin-top: 2rem;'>
-        <p>Rates Risk Library v0.1.0 | Interactive Dashboard</p>
-        <p>Comprehensive Coverage: Curves, Pricing, Risk, VaR, Scenarios, P&L, Liquidity</p>
-        <p><strong>Production-like Prototype - 84% Checklist Compliance</strong></p>
-    </div>
-    """, unsafe_allow_html=True)
 
 
 if __name__ == "__main__":

@@ -101,6 +101,42 @@ class SwapPricer:
             day_count=DayCount.ACT_360,
             payment_frequency=4  # Quarterly
         )
+
+    def forward_swap_rate(self, expiry: float, tenor: float) -> Tuple[float, float]:
+        """
+        Compute the forward par swap rate and annuity for a swap that starts at
+        `expiry` (in years) and runs for `tenor` (in years).
+
+        Uses the projection curve for forwards and the discount curve for the
+        annuity, aligned with the current fixed leg payment frequency.
+
+        Args:
+            expiry: time to start (years)
+            tenor: swap length (years) starting from expiry
+
+        Returns:
+            (forward_rate, annuity)
+        """
+        fixed_freq = self.fixed_conventions.payment_frequency
+        n_periods = int(tenor * fixed_freq)
+
+        payment_times = [expiry + (i + 1) / fixed_freq for i in range(n_periods)]
+
+        annuity = 0.0
+        for t in payment_times:
+            delta = 1.0 / fixed_freq  # simple accrual consistent with the frequency
+            df = self.discount_curve.discount_factor(t)
+            annuity += delta * df
+
+        df_start = self.projection_curve.discount_factor(expiry)
+        df_end = self.projection_curve.discount_factor(expiry + tenor)
+
+        if annuity > 0:
+            forward_rate = (df_start - df_end) / annuity
+        else:
+            forward_rate = 0.0
+
+        return forward_rate, annuity
     
     def generate_cashflows(
         self,
