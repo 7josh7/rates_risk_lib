@@ -13,6 +13,15 @@ from typing import Dict, List, Optional, Union
 import pandas as pd
 import numpy as np
 
+from typing import TYPE_CHECKING
+from ..options.swaption import SwaptionPricer
+from ..options.caplet import CapletPricer
+from ..dates import DateUtils
+from .sabr_surface import make_bucket_key
+
+if TYPE_CHECKING:
+    from ..market_state import CurveState
+
 
 @dataclass
 class VolQuote:
@@ -235,3 +244,163 @@ def generate_strike_ladder(
         strikes_bp = [-100, -50, -25, 0, 25, 50, 100]
     
     return [forward + bp / 10000.0 for bp in strikes_bp]
+
+
+def _resolve_columns(df: pd.DataFrame, candidates: List[str]) -> Optional[str]:
+    """Return the first column present from a candidate list."""
+    for c in candidates:
+        if c in df.columns:
+            return c
+    return None
+
+
+def _compute_forward(
+    instrument: str,
+    expiry: str,
+    tenor: str,
+    curve_state
+) -> Dict[str, float]:
+    """
+    Compute forward and maturity for a quote row.
+    """
+    instrument = instrument.upper()
+    if instrument == "SWAPTION":
+        expiry_years = DateUtils.tenor_to_years(expiry)
+        swap_years = DateUtils.tenor_to_years(tenor)
+        pricer = SwaptionPricer(curve_state.discount_curve, curve_state.projection_curve)
+        fwd, annuity = pricer.forward_swap_rate(expiry_years, swap_years)
+        return {"F0": fwd, "T": expiry_years, "annuity": annuity}
+
+    # Default to caplet conventions
+    start = DateUtils.tenor_to_years(expiry)
+    accrual = DateUtils.tenor_to_years(tenor)
+    end = start + accrual
+    pricer = CapletPricer(curve_state.discount_curve, curve_state.projection_curve)
+    fwd = pricer.forward_rate(start, end)
+    return {"F0": fwd, "T": start, "delta_t": accrual}
+
+
+def _normalize_strike(
+    forward: float,
+    row: pd.Series,
+    quote_type: str
+) -> Optional[float]:
+    """
+    Convert quote notation (ATM, BPS, absolute) into an absolute strike.
+    """
+    quote_type = str(quote_type).upper()
+
+    # Direct strike numeric value
+    if isinstance(row.get("strike"), (int, float)) and quote_type not in {"BPS", "ATM"}:
+        return float(row["strike"])
+
+    # ATM or explicit ATMF label
+    if quote_type in {"ATM", "ATMF"}:
+        return forward
+
+    # Basis point relative strikes
+    if quote_type in {"BPS", "ATM+BPS", "ATM_BP", "ATM+BPS", "ATM-BP"}:
+        try:
+            bp = float(row.get("strike", 0.0))
+            return forward + bp / 10000.0
+        except (TypeError, ValueError):
+            return None
+
+    # String like "+25BP" or "-50BP"
+    strike_val = row.get("strike")
+    if isinstance(strike_val, str) and strike_val.upper().endswith("BP"):
+        try:
+            bp_val = float(strike_val[:-2])
+            return forward + bp_val / 10000.0
+        except ValueError:
+            return None
+
+    return None
+
+
+def normalize_vol_quotes(
+    raw_quotes: Union[pd.DataFrame, str],
+    curve_state,
+    instrument_hint: str = "SWAPTION"
+) -> pd.DataFrame:
+    """
+    Convert heterogeneous vol quotes into a canonical DataFrame.
+
+    Canonical columns:
+        instrument, expiry, tenor, bucket_key, T, F0, K,
+        sigma_mkt, vol_type, shift, quote_type, quote_value, source
+
+    Unsupported or malformed rows are dropped; callers should inspect length.
+    """
+    if isinstance(raw_quotes, str):
+        df_raw = pd.read_csv(raw_quotes)
+    else:
+        df_raw = raw_quotes.copy()
+
+    df_raw.columns = [c.strip().lower() for c in df_raw.columns]
+
+    expiry_col = _resolve_columns(df_raw, ["expiry"])
+    tenor_col = _resolve_columns(df_raw, ["tenor", "underlying_tenor", "index_tenor"])
+    vol_col = _resolve_columns(df_raw, ["ivol", "vol"])
+    strike_type_col = _resolve_columns(df_raw, ["quote_type", "strike_type"])
+    strike_val_col = _resolve_columns(df_raw, ["quote_value", "strike"])
+    instrument_col = _resolve_columns(df_raw, ["instrument", "instrument_type"])
+
+    if expiry_col is None or tenor_col is None or vol_col is None:
+        raise ValueError("Vol quotes must include expiry, tenor and vol columns.")
+
+    records = []
+    for _, row in df_raw.iterrows():
+        instrument = str(row.get(instrument_col, instrument_hint)).upper() if instrument_col else instrument_hint.upper()
+        expiry = str(row[expiry_col]).strip()
+        tenor = str(row[tenor_col]).strip()
+        vol_type = str(row.get("vol_type", "NORMAL")).upper()
+        shift = float(row.get("shift", 0.0))
+
+        forward_info = _compute_forward(instrument, expiry, tenor, curve_state)
+        F0 = forward_info["F0"]
+        T = forward_info["T"]
+
+        quote_type = str(row.get(strike_type_col, "ATM")).upper() if strike_type_col else "ATM"
+        row_local = row.copy()
+        if strike_val_col:
+            row_local["strike"] = row[strike_val_col]
+        K = _normalize_strike(F0, row_local, quote_type)
+
+        if K is None:
+            # Skip malformed rows but annotate decision for the caller
+            continue
+
+        sigma_mkt = float(row[vol_col])
+        bucket = make_bucket_key(expiry, tenor)
+
+        records.append(
+            {
+                "instrument": instrument,
+                "expiry": expiry,
+                "tenor": tenor,
+                "bucket_key": bucket,
+                "T": T,
+                "F0": F0,
+                "K": K,
+                "sigma_mkt": sigma_mkt,
+                "vol_type": vol_type,
+                "shift": shift,
+                "quote_type": quote_type,
+                "quote_value": row_local.get("strike", 0.0),
+                "source": row.get("source"),
+            }
+        )
+
+    return pd.DataFrame(records)
+
+
+__all__ = [
+    "VolQuote",
+    "load_vol_quotes",
+    "quotes_to_dataframe",
+    "convert_normal_to_black",
+    "convert_black_to_normal",
+    "generate_strike_ladder",
+    "normalize_vol_quotes",
+]

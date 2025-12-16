@@ -8,12 +8,16 @@ Calibrates SABR parameters from market vol quotes:
 """
 
 from dataclasses import dataclass
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List, Optional, Tuple, TYPE_CHECKING, Any
 import numpy as np
 from scipy.optimize import minimize, differential_evolution
 import pandas as pd
 
 from .sabr import SabrParams, SabrModel, hagan_black_vol, hagan_normal_vol
+from .sabr_surface import SabrSurfaceState, SabrBucketParams
+
+if TYPE_CHECKING:
+    from ..market_state import CurveState
 
 
 @dataclass
@@ -302,5 +306,120 @@ def calibrate_sabr_surface(
         result = calibrator.fit(quote_data, F, T, shift, vol_type)
         if result.success:
             results[expiry] = result.params
-    
+        
     return results
+
+
+def calibrate_sabr_bucket(
+    quotes_bucket: pd.DataFrame,
+    beta: float,
+    vol_type: str,
+    shift: float = 0.0
+) -> Tuple[SabrBucketParams, CalibrationResult]:
+    """
+    Calibrate SABR parameters for a single (expiry, tenor) bucket.
+
+    Args:
+        quotes_bucket: Normalized quotes with columns K, sigma_mkt, F0, T
+        beta: Fixed beta to use
+        vol_type: "NORMAL" or "LOGNORMAL"
+        shift: Shift policy (per-bucket)
+
+    Returns:
+        (SabrBucketParams, CalibrationResult)
+    """
+    required_cols = {"K", "sigma_mkt", "F0", "T"}
+    missing = required_cols - set(quotes_bucket.columns)
+    if missing:
+        raise ValueError(f"Missing required columns for calibration: {missing}")
+
+    F0 = float(quotes_bucket["F0"].iloc[0])
+    T = float(quotes_bucket["T"].iloc[0])
+
+    calibrator = SabrCalibrator(beta=beta)
+    fit_df = quotes_bucket.rename(columns={"K": "strike", "sigma_mkt": "vol"})
+    # Preserve optional weights
+    columns = [c for c in ["strike", "vol", "weight"] if c in fit_df.columns]
+    fit_df = fit_df[columns]
+
+    result = calibrator.fit(fit_df, F=F0, T=T, shift=shift, vol_type=vol_type)
+
+    # Compute diagnostics: RMSE and max abs error in the quoting convention
+    errors = np.array(list(result.vol_errors.values()))
+    rmse = float(np.sqrt(np.mean(errors ** 2))) if len(errors) else 0.0
+    max_abs_error = float(np.max(np.abs(errors))) if len(errors) else 0.0
+
+    diagnostics = {
+        "rmse": rmse,
+        "max_abs_error": max_abs_error,
+        "num_quotes": len(fit_df),
+        "fit_error": float(result.fit_error),
+        "success": bool(result.success),
+        "vol_type": vol_type,
+    }
+
+    bucket_params = SabrBucketParams(
+        sigma_atm=result.params.sigma_atm,
+        nu=result.params.nu,
+        rho=result.params.rho,
+        beta=result.params.beta,
+        shift=result.params.shift,
+        diagnostics=diagnostics,
+    )
+
+    return bucket_params, result
+
+
+def build_sabr_surface(
+    normalized_quotes: pd.DataFrame,
+    curve_state: "CurveState",
+    beta_policy: float = 0.5,
+    min_quotes_per_bucket: int = 3
+) -> SabrSurfaceState:
+    """
+    Calibrate a bucketed SABR surface from normalized quotes.
+
+    Args:
+        normalized_quotes: Output from normalize_vol_quotes
+        curve_state: CurveState providing anchor/asof metadata
+        beta_policy: Fixed beta to use for all buckets
+        min_quotes_per_bucket: Skip buckets with fewer strikes than this
+
+    Returns:
+        SabrSurfaceState with diagnostics attached
+    """
+    if normalized_quotes.empty:
+        return SabrSurfaceState(
+            params_by_bucket={},
+            convention={"beta": beta_policy},
+            asof=str(getattr(curve_state.discount_curve, "anchor_date", "")),
+        )
+
+    params_by_bucket: Dict[Tuple[str, str], SabrBucketParams] = {}
+
+    for bucket, group in normalized_quotes.groupby("bucket_key"):
+        if len(group) < min_quotes_per_bucket:
+            continue
+
+        vol_type = str(group.get("vol_type", "NORMAL").iloc[0]).upper()
+        shift = float(group.get("shift", 0.0).iloc[0]) if "shift" in group.columns else 0.0
+
+        bucket_params, result = calibrate_sabr_bucket(
+            quotes_bucket=group,
+            beta=beta_policy,
+            vol_type=vol_type,
+            shift=shift,
+        )
+        params_by_bucket[bucket] = bucket_params
+
+    convention = {
+        "beta": beta_policy,
+        "vol_type": normalized_quotes["vol_type"].iloc[0] if "vol_type" in normalized_quotes.columns else "NORMAL",
+        "quote_source": normalized_quotes["source"].iloc[0] if "source" in normalized_quotes.columns else None,
+    }
+
+    return SabrSurfaceState(
+        params_by_bucket=params_by_bucket,
+        convention=convention,
+        asof=str(curve_state.discount_curve.anchor_date),
+    )

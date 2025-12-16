@@ -45,6 +45,9 @@ from rateslib import (
     PnLAttributionEngine, PnLAttribution,
     # Liquidity
     LiquidityEngine, LiquidityAdjustedVaR,
+    # Market state / SABR
+    MarketState, CurveState, normalize_vol_quotes, build_sabr_surface,
+    price_trade, risk_trade,
     # Conventions
     DayCount, Conventions,
     DateUtils,
@@ -139,6 +142,16 @@ def load_positions():
     return pd.read_csv(paths["book"] / "positions.csv", comment="#")
 
 
+@st.cache_data
+def load_option_vol_quotes():
+    """Load swaption/caplet vol quotes for SABR calibration."""
+    paths = get_data_paths()
+    vol_path = paths["data"] / "vol_quotes.csv"
+    if vol_path.exists():
+        return pd.read_csv(vol_path, comment="#")
+    return pd.DataFrame()
+
+
 @st.cache_resource
 def build_ois_curve(valuation_date, quotes_df):
     """Build OIS discount curve using bootstrap."""
@@ -171,6 +184,30 @@ def build_treasury_curve(valuation_date, quotes_df):
     curve = nss.to_curve(tenors=[0.25, 0.5, 1, 2, 3, 5, 7, 10, 15, 20, 30])
     
     return curve, nss
+
+
+def build_market_state(discount_curve, projection_curve, valuation_date, vol_quotes_df):
+    """
+    Build MarketState with SABR surface calibrated from provided vol quotes.
+    """
+    curve_state = CurveState(
+        discount_curve=discount_curve,
+        projection_curve=projection_curve,
+        metadata={"valuation_date": str(valuation_date)},
+    )
+
+    if vol_quotes_df is None or vol_quotes_df.empty:
+        return MarketState(curve=curve_state, sabr_surface=None, asof=str(valuation_date)), pd.DataFrame()
+
+    try:
+        normalized = normalize_vol_quotes(vol_quotes_df, curve_state)
+        sabr_surface = build_sabr_surface(normalized, curve_state, beta_policy=0.5)
+    except Exception as exc:
+        st.warning(f"SABR calibration failed: {exc}")
+        normalized = pd.DataFrame()
+        sabr_surface = None
+
+    return MarketState(curve=curve_state, sabr_surface=sabr_surface, asof=str(valuation_date)), normalized
 
 
 # =============================================================================
@@ -462,6 +499,11 @@ def main():
     with st.spinner('Building yield curves...'):
         ois_curve = build_ois_curve(valuation_date, ois_quotes)
         treasury_curve, nss_model = build_treasury_curve(valuation_date, treasury_quotes)
+
+    vol_quotes_df = load_option_vol_quotes()
+    market_state, normalized_vol_quotes = build_market_state(
+        ois_curve, ois_curve, valuation_date, vol_quotes_df
+    )
     
     # Create tabs for different sections
     tab1, tab2, tab3, tab4, tab5, tab6, tab7, tab8 = st.tabs([
@@ -633,6 +675,81 @@ def main():
                 col1.metric("Theoretical Price", f"{price:.4f}")
                 col2.metric("Implied Rate", f"{(100-price):.4f}%")
                 col3.metric("DV01 (total)", f"${dv01:,.2f}")
+
+        # Options / SABR pricing
+        st.subheader("Options (SABR Surface)")
+        if market_state.sabr_surface is None or normalized_vol_quotes.empty:
+            st.info("Provide vol_quotes.csv to calibrate SABR and price options.")
+        else:
+            swaption_quotes = normalized_vol_quotes[normalized_vol_quotes["instrument"] == "SWAPTION"] \
+                if "instrument" in normalized_vol_quotes.columns else normalized_vol_quotes
+            available_expiries = sorted(swaption_quotes["expiry"].unique())
+            available_tenors = sorted(swaption_quotes["tenor"].unique())
+
+            col1, col2, col3 = st.columns(3)
+            with col1:
+                chosen_expiry = st.selectbox("Expiry", available_expiries, index=0)
+            with col2:
+                chosen_tenor = st.selectbox("Swap Tenor", available_tenors, index=0)
+            with col3:
+                strike_offset = st.slider("Strike Offset (bp)", -200, 200, 0, step=5)
+
+            # Determine ATM forward from calibrated quotes if available
+            fwd_guess = swaption_quotes[
+                (swaption_quotes["expiry"] == chosen_expiry) &
+                (swaption_quotes["tenor"] == chosen_tenor)
+            ]
+            if not fwd_guess.empty:
+                forward_rate = float(fwd_guess["F0"].iloc[0])
+            else:
+                forward_rate = 0.0
+
+            strike_rate = forward_rate + strike_offset / 10000.0
+            notional_opt = st.number_input("Notional ($)", value=10_000_000, step=1_000_000)
+
+            trade = {
+                "instrument_type": "SWAPTION",
+                "expiry_tenor": chosen_expiry,
+                "swap_tenor": chosen_tenor,
+                "strike": strike_rate,
+                "payer_receiver": "PAYER",
+                "notional": notional_opt,
+                "vol_type": "NORMAL",
+            }
+
+            try:
+                price_result = price_trade(trade, market_state).to_dict()
+                risk_result = risk_trade(trade, market_state)
+
+                col1, col2, col3 = st.columns(3)
+                col1.metric("PV", f"${price_result.get('pv', 0):,.0f}")
+                col2.metric("Forward Swap Rate", f"{price_result.get('forward', forward_rate)*100:.3f}%")
+                col3.metric("Implied Vol", f"{price_result.get('implied_vol', 0)*10000:.1f} bp")
+
+                st.write("SABR Bucket Diagnostics")
+                diag_rows = []
+                for bucket, diag in market_state.sabr_surface.diagnostics_table().items():
+                    bucket_label = f"{bucket[0]} x {bucket[1]}"
+                    diag_rows.append({"Bucket": bucket_label, **diag})
+                diag_df = pd.DataFrame(diag_rows)
+                st.dataframe(
+                    diag_df.style.format(
+                        {
+                            "sigma_atm": "{:.5f}",
+                            "nu": "{:.4f}",
+                            "rho": "{:.3f}",
+                            "rmse": "{:.6f}",
+                            "max_abs_error": "{:.6f}",
+                        }
+                    ),
+                    use_container_width=True,
+                )
+
+                if risk_result:
+                    st.write("SABR Sensitivities")
+                    st.json(risk_result.get("sabr_sensitivities", {}))
+            except Exception as exc:
+                st.warning(f"Option pricing failed: {exc}")
     
     # =========================================================================
     # TAB 3: Risk Metrics
@@ -691,6 +808,21 @@ def main():
             st.metric("Portfolio Convexity", "218")
         with col2:
             st.info("Convexity measures the curvature of price-yield relationship")
+
+        st.subheader("SABR Calibration Diagnostics")
+        if market_state.sabr_surface is None or normalized_vol_quotes.empty:
+            st.info("No SABR surface calibrated for the current session.")
+        else:
+            diag_rows = []
+            for bucket, diag in market_state.sabr_surface.diagnostics_table().items():
+                diag_rows.append({"Bucket": f"{bucket[0]} x {bucket[1]}", **diag})
+            diag_df = pd.DataFrame(diag_rows)
+            st.dataframe(
+                diag_df.style.format(
+                    {"sigma_atm": "{:.5f}", "nu": "{:.4f}", "rho": "{:.3f}", "rmse": "{:.6f}"}
+                ),
+                use_container_width=True,
+            )
     
     # =========================================================================
     # TAB 4: VaR Analysis

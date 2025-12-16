@@ -465,7 +465,8 @@ class SabrModel:
         F: float,
         K: float,
         T: float,
-        params: SabrParams
+        params: SabrParams,
+        vol_type: str = "BLACK"
     ) -> float:
         """
         Derivative of implied vol w.r.t. rho (for vanna).
@@ -475,6 +476,7 @@ class SabrModel:
             K: Strike
             T: Time to expiry
             params: SABR parameters
+            vol_type: "BLACK" or "NORMAL"
             
         Returns:
             d_sigma/d_rho
@@ -485,8 +487,15 @@ class SabrModel:
         rho_up = min(params.rho + eps, 0.99)
         rho_down = max(params.rho - eps, -0.99)
         
-        vol_up = hagan_black_vol(F, K, T, alpha, params.beta, rho_up, params.nu, params.shift)
-        vol_down = hagan_black_vol(F, K, T, alpha, params.beta, rho_down, params.nu, params.shift)
+        vol_type_upper = vol_type.upper()
+
+        if vol_type_upper == "NORMAL":
+            vol_fn = hagan_normal_vol
+        else:
+            vol_fn = hagan_black_vol
+
+        vol_up = vol_fn(F, K, T, alpha, params.beta, rho_up, params.nu, params.shift)
+        vol_down = vol_fn(F, K, T, alpha, params.beta, rho_down, params.nu, params.shift)
         
         # Also need to account for alpha change due to rho change
         dalpha_drho = self.dalpha_dtheta(F, T, params, 'rho')
@@ -495,8 +504,8 @@ class SabrModel:
         alpha_up = alpha + dalpha_drho * eps
         alpha_down = alpha - dalpha_drho * eps
         
-        vol_up_full = hagan_black_vol(F, K, T, alpha_up, params.beta, rho_up, params.nu, params.shift)
-        vol_down_full = hagan_black_vol(F, K, T, alpha_down, params.beta, rho_down, params.nu, params.shift)
+        vol_up_full = vol_fn(F, K, T, alpha_up, params.beta, rho_up, params.nu, params.shift)
+        vol_down_full = vol_fn(F, K, T, alpha_down, params.beta, rho_down, params.nu, params.shift)
         
         return (vol_up_full - vol_down_full) / (rho_up - rho_down)
     
@@ -505,7 +514,8 @@ class SabrModel:
         F: float,
         K: float,
         T: float,
-        params: SabrParams
+        params: SabrParams,
+        vol_type: str = "BLACK"
     ) -> float:
         """
         Derivative of implied vol w.r.t. nu (for volga).
@@ -515,6 +525,7 @@ class SabrModel:
             K: Strike
             T: Time to expiry
             params: SABR parameters
+            vol_type: "BLACK" or "NORMAL"
             
         Returns:
             d_sigma/d_nu
@@ -530,9 +541,15 @@ class SabrModel:
         
         alpha_up = alpha + dalpha_dnu * eps
         alpha_down = alpha - dalpha_dnu * eps
-        
-        vol_up = hagan_black_vol(F, K, T, alpha_up, params.beta, params.rho, nu_up, params.shift)
-        vol_down = hagan_black_vol(F, K, T, alpha_down, params.beta, params.rho, nu_down, params.shift)
+
+        vol_type_upper = vol_type.upper()
+        if vol_type_upper == "NORMAL":
+            vol_fn = hagan_normal_vol
+        else:
+            vol_fn = hagan_black_vol
+
+        vol_up = vol_fn(F, K, T, alpha_up, params.beta, params.rho, nu_up, params.shift)
+        vol_down = vol_fn(F, K, T, alpha_down, params.beta, params.rho, nu_down, params.shift)
         
         return (vol_up - vol_down) / (nu_up - nu_down)
     

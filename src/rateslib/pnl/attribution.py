@@ -32,6 +32,7 @@ import numpy as np
 from ..curves.curve import Curve
 from ..risk.sensitivities import RiskCalculator, InstrumentRisk
 from ..risk.keyrate import KeyRateDV01
+from ..market_state import MarketState
 
 
 @dataclass
@@ -355,10 +356,57 @@ def compute_carry_rolldown(
     return carry, rolldown, total
 
 
+def attribute_curve_vs_vol(
+    base_state: MarketState,
+    shocked_state: MarketState,
+    price_func: Callable[[MarketState], float],
+    curve_only_state: Optional[MarketState] = None,
+    vol_only_state: Optional[MarketState] = None,
+) -> Dict[str, float]:
+    """
+    Attribute P&L into curve, vol, and cross components using bump-and-reprice.
+
+    Args:
+        base_state: MarketState at t0
+        shocked_state: MarketState after combined shock
+        price_func: Callable that takes MarketState -> PV
+        curve_only_state: Optional state with curve shocked only
+        vol_only_state: Optional state with SABR shocked only
+
+    Returns:
+        Dict with curve, vol, cross, residual, total, base_pv, shocked_pv
+    """
+    base_pv = price_func(base_state)
+
+    curve_state = curve_only_state or base_state.copy(curve=shocked_state.curve, sabr_surface=base_state.sabr_surface)
+    vol_state = vol_only_state or base_state.copy(curve=base_state.curve, sabr_surface=shocked_state.sabr_surface)
+
+    curve_pv = price_func(curve_state)
+    vol_pv = price_func(vol_state)
+    shocked_pv = price_func(shocked_state)
+
+    curve_component = curve_pv - base_pv
+    vol_component = vol_pv - base_pv
+    cross = shocked_pv - curve_pv - vol_pv + base_pv
+    total = shocked_pv - base_pv
+    residual = total - (curve_component + vol_component + cross)
+
+    return {
+        "base_pv": base_pv,
+        "shocked_pv": shocked_pv,
+        "curve": curve_component,
+        "vol": vol_component,
+        "cross": cross,
+        "residual": residual,
+        "total": total,
+    }
+
+
 __all__ = [
     "PnLAttribution",
     "PnLComponents",
     "PnLAttributionEngine",
     "compute_daily_pnl",
     "compute_carry_rolldown",
+    "attribute_curve_vs_vol",
 ]

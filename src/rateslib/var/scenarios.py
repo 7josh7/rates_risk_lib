@@ -12,7 +12,7 @@ Scenarios are defined as rate changes at each key tenor.
 
 from dataclasses import dataclass, field
 from datetime import date
-from typing import Callable, Dict, List, Optional
+from typing import Callable, Dict, List, Optional, Any
 
 import numpy as np
 import pandas as pd
@@ -20,6 +20,8 @@ import pandas as pd
 from ..curves.curve import Curve
 from ..dates import DateUtils
 from ..risk.bumping import BumpEngine
+from ..market_state import MarketState, CurveState
+from ..vol.sabr_surface import SabrSurfaceState, SabrBucketParams, BucketKey
 
 
 @dataclass
@@ -372,10 +374,136 @@ def create_custom_scenario(
     )
 
 
+# === Combined curve + SABR scenarios ======================================
+
+@dataclass
+class SabrShock:
+    """Shock to SABR parameters (additive with optional scaling)."""
+
+    dsigma_atm: float = 0.0
+    dnu: float = 0.0
+    drho: float = 0.0
+    sigma_scale: float = 0.0
+    nu_scale: float = 0.0
+
+
+def _apply_sabr_shocks(surface: Optional[SabrSurfaceState], shocks: Dict[BucketKey, SabrShock]) -> Optional[SabrSurfaceState]:
+    """Return new SABR surface with shocks applied."""
+    if surface is None:
+        return None
+
+    params_new: Dict[BucketKey, SabrBucketParams] = {}
+    for bucket, params in surface.params_by_bucket.items():
+        shock = shocks.get(bucket) or shocks.get(("ALL", "ALL"))
+        if shock is None:
+            params_new[bucket] = params
+            continue
+
+        sigma = max(1e-8, params.sigma_atm * (1 + shock.sigma_scale) + shock.dsigma_atm)
+        nu = max(1e-8, params.nu * (1 + shock.nu_scale) + shock.dnu)
+        rho = float(np.clip(params.rho + shock.drho, -0.999, 0.999))
+
+        diag = dict(params.diagnostics)
+        diag["shock"] = {
+            "dsigma_atm": shock.dsigma_atm,
+            "dnu": shock.dnu,
+            "drho": shock.drho,
+            "sigma_scale": shock.sigma_scale,
+            "nu_scale": shock.nu_scale,
+        }
+
+        params_new[bucket] = SabrBucketParams(
+            sigma_atm=sigma,
+            nu=nu,
+            rho=rho,
+            beta=params.beta,
+            shift=params.shift,
+            diagnostics=diag,
+        )
+
+    return SabrSurfaceState(
+        params_by_bucket=params_new,
+        convention=surface.convention,
+        asof=surface.asof,
+        missing_bucket_policy=surface.missing_bucket_policy,
+    )
+
+
+def apply_market_scenario(
+    market_state: MarketState,
+    curve_bump_profile: Optional[Dict[str, float]] = None,
+    sabr_shocks: Optional[Dict[BucketKey, SabrShock]] = None,
+) -> MarketState:
+    """
+    Apply combined curve + SABR shocks to a MarketState.
+
+    Args:
+        market_state: Base MarketState
+        curve_bump_profile: Dict tenor->bp for curve shocks
+        sabr_shocks: Dict bucket->SabrShock (use ("ALL","ALL") for blanket)
+    """
+    curve_bump_profile = curve_bump_profile or {}
+    sabr_shocks = sabr_shocks or {}
+
+    bump_engine = BumpEngine(market_state.curve.discount_curve)
+    bumped_curve = bump_engine.custom_bump(curve_bump_profile) if curve_bump_profile else market_state.curve.discount_curve
+    # Apply the same bump to projection curve for simplicity
+    if market_state.curve.projection_curve is market_state.curve.discount_curve:
+        bumped_projection = bumped_curve
+    else:
+        proj_engine = BumpEngine(market_state.curve.projection_curve)
+        bumped_projection = proj_engine.custom_bump(curve_bump_profile) if curve_bump_profile else market_state.curve.projection_curve
+
+    new_curve_state = CurveState(
+        discount_curve=bumped_curve,
+        projection_curve=bumped_projection,
+        metadata=dict(market_state.curve.metadata),
+    )
+
+    new_surface = _apply_sabr_shocks(market_state.sabr_surface, sabr_shocks)
+
+    return MarketState(curve=new_curve_state, sabr_surface=new_surface, asof=market_state.asof)
+
+
+SABR_STRESS_REGIMES: Dict[str, Dict[str, Any]] = {
+    "CALM": {
+        "curve": {},
+        "sabr": {("ALL", "ALL"): SabrShock(sigma_scale=-0.10, nu_scale=-0.15, drho=0.02)},
+    },
+    "RISK_OFF": {
+        "curve": {"2Y": 15, "5Y": 10, "10Y": 5},
+        "sabr": {("ALL", "ALL"): SabrShock(sigma_scale=0.20, nu_scale=0.25, drho=-0.08)},
+    },
+    "CRISIS": {
+        "curve": {"2Y": 50, "5Y": 40, "10Y": 35, "30Y": 25},
+        "sabr": {("ALL", "ALL"): SabrShock(sigma_scale=0.50, nu_scale=0.60, drho=-0.15)},
+    },
+}
+
+
+def apply_named_market_regime(market_state: MarketState, regime: str) -> MarketState:
+    """
+    Apply a named regime (CALM, RISK_OFF, CRISIS) to the market state.
+    """
+    regime_upper = regime.upper()
+    if regime_upper not in SABR_STRESS_REGIMES:
+        raise ValueError(f"Unknown regime: {regime}")
+    spec = SABR_STRESS_REGIMES[regime_upper]
+    return apply_market_scenario(
+        market_state,
+        curve_bump_profile=spec.get("curve", {}),
+        sabr_shocks=spec.get("sabr", {}),
+    )
+
+
 __all__ = [
     "Scenario",
     "ScenarioResult",
     "ScenarioEngine",
     "STANDARD_SCENARIOS",
     "create_custom_scenario",
+    "apply_market_scenario",
+    "apply_named_market_regime",
+    "SabrShock",
+    "SABR_STRESS_REGIMES",
 ]

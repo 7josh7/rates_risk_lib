@@ -28,6 +28,11 @@ from .scenarios import (
     Scenario,
     ScenarioResult,
     STANDARD_SCENARIOS,
+    create_custom_scenario,
+    apply_market_scenario,
+    apply_named_market_regime,
+    SabrShock,
+    SABR_STRESS_REGIMES,
 )
 
 __all__ = [
@@ -44,4 +49,9 @@ __all__ = [
     "Scenario",
     "ScenarioResult",
     "STANDARD_SCENARIOS",
+    "create_custom_scenario",
+    "apply_market_scenario",
+    "apply_named_market_regime",
+    "SabrShock",
+    "SABR_STRESS_REGIMES",
 ]

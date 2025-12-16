@@ -17,6 +17,7 @@ import argparse
 import sys
 from datetime import date, timedelta
 from pathlib import Path
+from typing import Optional, Tuple
 
 import numpy as np
 import pandas as pd
@@ -34,7 +35,7 @@ from rateslib.curves import (
     OISSwap,
     bootstrap_from_quotes,
 )
-from rateslib.pricers import BondPricer, SwapPricer, FuturesPricer, FuturesContract
+from rateslib.pricers import BondPricer, SwapPricer, FuturesPricer, FuturesContract, price_trade
 from rateslib.risk import RiskCalculator, BumpEngine, KeyRateEngine, PortfolioRisk
 from rateslib.var import HistoricalSimulation, MonteCarloVaR, ScenarioEngine, STANDARD_SCENARIOS
 from rateslib.pnl import PnLAttributionEngine
@@ -44,6 +45,12 @@ from rateslib.reporting import (
     generate_risk_summary,
     generate_position_report,
     export_to_csv,
+)
+from rateslib import (
+    CurveState,
+    MarketState,
+    normalize_vol_quotes,
+    build_sabr_surface,
 )
 
 
@@ -65,6 +72,14 @@ def load_historical_rates(data_dir: Path) -> pd.DataFrame:
 def load_positions(data_dir: Path) -> pd.DataFrame:
     """Load portfolio positions from CSV."""
     return pd.read_csv(data_dir / "sample_book" / "positions.csv", comment="#")
+
+
+def load_vol_quotes(data_dir: Path) -> pd.DataFrame:
+    """Load vol quotes used for SABR calibration."""
+    vol_path = data_dir / "vol_quotes.csv"
+    if vol_path.exists():
+        return pd.read_csv(vol_path, comment="#")
+    return pd.DataFrame()
 
 
 def build_ois_curve(quotes_df: pd.DataFrame, valuation_date: date) -> Curve:
@@ -93,7 +108,7 @@ def build_ois_curve(quotes_df: pd.DataFrame, valuation_date: date) -> Curve:
     return curve
 
 
-def build_treasury_curve(quotes_df: pd.DataFrame, valuation_date: date) -> Curve:
+def build_treasury_curve(quotes_df: pd.DataFrame, valuation_date: date) -> Tuple[Curve, NelsonSiegelSvensson]:
     """Build Treasury curve using NSS fitting."""
     print("\n" + "="*60)
     print("Building Treasury Curve (Nelson-Siegel-Svensson)")
@@ -125,14 +140,15 @@ def build_treasury_curve(quotes_df: pd.DataFrame, valuation_date: date) -> Curve
     print(f"  lambda2: {nss.params.lambda2:.6f}")
     
     # Convert to curve
-    return nss.to_curve(tenors=[0.25, 0.5, 1, 2, 3, 5, 7, 10, 15, 20, 30])
+    return nss.to_curve(tenors=[0.25, 0.5, 1, 2, 3, 5, 7, 10, 15, 20, 30]), nss
 
 
 def price_portfolio(
     positions_df: pd.DataFrame,
     ois_curve: Curve,
     treasury_curve: Curve,
-    valuation_date: date
+    valuation_date: date,
+    market_state: MarketState
 ) -> list:
     """Price all positions in the portfolio."""
     print("\n" + "="*60)
@@ -143,7 +159,7 @@ def price_portfolio(
     bond_pricer = BondPricer(treasury_curve)
     swap_pricer = SwapPricer(ois_curve, ois_curve)
     futures_pricer = FuturesPricer(ois_curve)
-    
+    swaption_pricer = None
     results = []
     
     for _, pos in positions_df.iterrows():
@@ -156,6 +172,8 @@ def price_portfolio(
         sign = 1.0
         if direction in ['SHORT', 'PAY_FIXED']:
             sign = -1.0
+        if direction in ['RECEIVER']:
+            sign = 1.0
         
         if inst_type == 'UST':
             # Price bond
@@ -259,6 +277,77 @@ def price_portfolio(
             })
             
             print(f"  {pos_id}: {pos['instrument_id']:>8s} | PV: ${pv:>14,.2f} | DV01: ${dv01:>10,.2f}")
+
+        elif inst_type == 'SWAPTION':
+            # Price European swaption using SABR surface if available
+            from rateslib.options.swaption import SwaptionPricer
+
+            expiry_tenor = pos.get('expiry_tenor', '1Y')
+            swap_tenor = pos.get('swap_tenor', '5Y')
+            vol_type = str(pos.get('vol_type', 'NORMAL')).upper()
+            payer_receiver = "PAYER" if str(direction).upper().startswith("PAY") or str(direction).upper().startswith("PAYER") else "RECEIVER"
+
+            try:
+                expiry_years = DateUtils.tenor_to_years(expiry_tenor)
+                swap_years = DateUtils.tenor_to_years(swap_tenor)
+            except Exception:
+                expiry_years = 1.0
+                swap_years = 5.0
+
+            if swaption_pricer is None:
+                swaption_pricer = SwaptionPricer(market_state.curve.discount_curve, market_state.curve.projection_curve)
+
+            forward, annuity = swaption_pricer.forward_swap_rate(expiry_years, swap_years)
+
+            strike_raw = pos.get('strike', 'ATM')
+            if isinstance(strike_raw, str) and strike_raw.upper() == "ATM":
+                strike = forward
+            else:
+                try:
+                    strike = float(strike_raw)
+                except Exception:
+                    strike = forward
+
+            sabr_params = market_state.get_sabr_params(expiry_tenor, swap_tenor, allow_fallback=True)
+            if sabr_params:
+                result = swaption_pricer.price_with_sabr(
+                    expiry_tenor=expiry_tenor,
+                    swap_tenor=swap_tenor,
+                    K=strike,
+                    sabr_params=sabr_params.to_sabr_params(),
+                    vol_type=vol_type,
+                    payer_receiver=payer_receiver,
+                    notional=abs(notional)
+                )
+                pv = sign * result.price
+                implied_vol = result.implied_vol
+            else:
+                vol = float(pos.get('vol', pos.get('coupon', 0.0)))
+                pv = sign * swaption_pricer.price(
+                    S=forward,
+                    K=strike,
+                    T=expiry_years,
+                    annuity=annuity,
+                    vol=vol,
+                    vol_type=vol_type,
+                    payer_receiver=payer_receiver,
+                    notional=abs(notional)
+                )
+                implied_vol = vol
+
+            results.append({
+                'position_id': pos_id,
+                'instrument': pos['instrument_id'],
+                'type': 'Swaption',
+                'notional': notional,
+                'pv': pv,
+                'dv01': 0.0,
+                'forward': forward,
+                'strike': strike,
+                'implied_vol': implied_vol,
+            })
+
+            print(f"  {pos_id}: {pos['instrument_id']:>8s} | PV: ${pv:>14,.2f} | Strike: {strike*100:.3f}% | Vol: {implied_vol*10000:.1f}bp")
     
     return results
 
@@ -396,13 +485,45 @@ def run_scenario_analysis(total_dv01: float, key_rate_dv01: dict) -> dict:
     return results
 
 
+def build_market_state(
+    ois_curve: Curve,
+    vol_quotes_df: pd.DataFrame,
+    valuation_date: date
+) -> tuple[MarketState, pd.DataFrame]:
+    """
+    Build MarketState including SABR surface if vol quotes are available.
+    """
+    curve_state = CurveState(discount_curve=ois_curve, projection_curve=ois_curve)
+
+    if vol_quotes_df is None or vol_quotes_df.empty:
+        return MarketState(curve=curve_state, sabr_surface=None, asof=str(valuation_date)), pd.DataFrame()
+
+    try:
+        normalized = normalize_vol_quotes(vol_quotes_df, curve_state)
+        sabr_surface = build_sabr_surface(normalized, curve_state, beta_policy=0.5)
+    except Exception as exc:
+        print(f"[Warning] SABR calibration failed: {exc}")
+        normalized = pd.DataFrame()
+        sabr_surface = None
+
+    if sabr_surface:
+        print("\nSABR Calibration Diagnostics:")
+        for bucket, params in sabr_surface.params_by_bucket.items():
+            diag = params.diagnostics or {}
+            print(f"  Bucket {bucket[0]} x {bucket[1]} | sigma_atm={params.sigma_atm:.5f}, nu={params.nu:.4f}, rho={params.rho:.3f}, RMSE={diag.get('rmse', 0):.6f}")
+
+    return MarketState(curve=curve_state, sabr_surface=sabr_surface, asof=str(valuation_date)), normalized
+
+
 def generate_report(
     valuation_date: date,
     priced_positions: list,
     risk_metrics: dict,
     var_results: dict,
     scenario_results: dict,
-    output_dir: Path
+    output_dir: Path,
+    nss_model: Optional[NelsonSiegelSvensson] = None,
+    sabr_surface=None
 ) -> RiskReport:
     """Generate comprehensive risk report."""
     print("\n" + "="*60)
@@ -437,6 +558,42 @@ def generate_report(
         data=position_df,
         notes="All values in USD"
     )
+
+    # Model parameter section
+    model_meta = {}
+    if nss_model is not None:
+        model_meta.update({
+            "NSS_beta0": nss_model.params.beta0,
+            "NSS_beta1": nss_model.params.beta1,
+            "NSS_beta2": nss_model.params.beta2,
+            "NSS_beta3": nss_model.params.beta3,
+            "NSS_lambda1": nss_model.params.lambda1,
+            "NSS_lambda2": nss_model.params.lambda2,
+        })
+    report.add_section(
+        title="Model Parameters",
+        data=model_meta or {"note": "NSS parameters not available"},
+    )
+
+    if sabr_surface is not None and getattr(sabr_surface, "params_by_bucket", None):
+        sabr_rows = []
+        for bucket, params in sabr_surface.params_by_bucket.items():
+            row = {
+                "bucket_expiry": bucket[0],
+                "bucket_tenor": bucket[1],
+                "sigma_atm": params.sigma_atm,
+                "nu": params.nu,
+                "rho": params.rho,
+                "beta": params.beta,
+                "shift": params.shift,
+            }
+            if params.diagnostics:
+                row.update(params.diagnostics)
+            sabr_rows.append(row)
+        report.add_section(
+            title="SABR Buckets",
+            data=pd.DataFrame(sabr_rows)
+        )
     
     # Key rate DV01 section
     kr_data = [{"Tenor": k, "DV01": v} for k, v in risk_metrics['key_rate_dv01'].items()]
@@ -490,6 +647,11 @@ def main():
         default="./output",
         help="Output directory for reports"
     )
+    parser.add_argument(
+        "--no-default-option",
+        action="store_true",
+        help="Skip adding the default swaption position",
+    )
     args = parser.parse_args()
     
     # Setup paths
@@ -519,10 +681,34 @@ def main():
     
     # Step 2: Build curves
     ois_curve = build_ois_curve(ois_quotes, valuation_date)
-    treasury_curve = build_treasury_curve(treasury_quotes, valuation_date)
+    treasury_curve, nss_model = build_treasury_curve(treasury_quotes, valuation_date)
+
+    # Build market state with SABR surface
+    vol_quotes_df = load_vol_quotes(data_dir)
+    market_state, normalized_quotes = build_market_state(ois_curve, vol_quotes_df, valuation_date)
+
+    # Add a default ATM payer swaption unless disabled
+    if not args.no_default_option:
+        default_swaption = {
+            "position_id": "POSOPT1",
+            "instrument_type": "SWAPTION",
+            "instrument_id": "SWPT_1Y5Y",
+            "notional": 5_000_000,
+            "direction": "PAYER",
+            "maturity_date": "",
+            "coupon": 0.0,
+            "entry_date": valuation_date,
+            "entry_price": 0.0,
+            "expiry_tenor": "1Y",
+            "swap_tenor": "5Y",
+            "strike": "ATM",
+            "vol_type": "NORMAL",
+        }
+        positions = pd.concat([positions, pd.DataFrame([default_swaption])], ignore_index=True)
+        print("  Added default swaption position POSOPT1 (1Yx5Y ATM payer)")
     
     # Step 3: Price portfolio
-    priced_positions = price_portfolio(positions, ois_curve, treasury_curve, valuation_date)
+    priced_positions = price_portfolio(positions, ois_curve, treasury_curve, valuation_date, market_state)
     
     # Step 4: Calculate risk metrics
     risk_metrics = calculate_risk_metrics(priced_positions, ois_curve, valuation_date)
@@ -547,7 +733,9 @@ def main():
         risk_metrics,
         var_results,
         scenario_results,
-        output_dir
+        output_dir,
+        nss_model=nss_model,
+        sabr_surface=market_state.sabr_surface,
     )
     
     print("\n" + "="*60)
