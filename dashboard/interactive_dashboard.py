@@ -39,6 +39,7 @@ from rateslib import (
     BondPricer, SwapPricer, FuturesPricer, FuturesContract,
     # Risk
     BumpEngine, RiskCalculator, KeyRateEngine, InstrumentRisk, PortfolioRisk,
+    RiskLimits, RiskLimitChecker, LimitLevel,
     # VaR
     HistoricalSimulation, MonteCarloVaR, StressedVaR, ScenarioEngine, STANDARD_SCENARIOS,
     # P&L
@@ -536,6 +537,17 @@ def main():
     if not isinstance(valuation_date, date):
         valuation_date = valuation_date.date()
     
+    # Risk limits configuration
+    st.sidebar.header("Risk Limits")
+    use_limits = st.sidebar.checkbox("Enable Risk Limits", value=True)
+    
+    if use_limits:
+        risk_limits = RiskLimits.default_limits()
+        st.sidebar.success("✅ Using default limits")
+    else:
+        risk_limits = None
+        st.sidebar.info("ℹ️ Limits disabled")
+    
     # Load data
     with st.spinner('Loading market data...'):
         ois_quotes = load_ois_quotes()
@@ -552,6 +564,7 @@ def main():
     # Build market state
     with st.spinner('Building market state...'):
         market_state = build_market_state(valuation_date, ois_curve, treasury_curve, nss_model, vol_quotes_df)
+
     
     # Create tabs for different sections
     tab1, tab2, tab3, tab4, tab5, tab6, tab7, tab8, tab9 = st.tabs([
@@ -961,6 +974,75 @@ def main():
         col2.metric("Total DV01", f"${total_dv01:,.2f}")
         col3.metric("Number of Positions", len(positions_df))
         col4.metric("Curve Date", valuation_date.strftime("%Y-%m-%d"))
+        
+        # Risk Limits Monitoring
+        if risk_limits is not None:
+            st.subheader("Risk Limits Monitoring")
+            
+            # Create metrics dictionary for limit checking
+            metrics = {
+                'dv01': abs(total_dv01),
+            }
+            
+            # Add key-rate DV01 metrics (simplified for demo)
+            kr_dv01s_dict = {
+                'dv01_2y': abs(total_dv01 / 4),
+                'dv01_5y': abs(total_dv01 / 4),
+                'dv01_10y': abs(total_dv01 / 4),
+                'dv01_30y': abs(total_dv01 / 4),
+            }
+            metrics.update(kr_dv01s_dict)
+            
+            # Check limits
+            limit_checker = RiskLimitChecker(risk_limits)
+            limit_results = limit_checker.check_all(metrics)
+            
+            # Summary
+            summary = limit_checker.summary_stats(metrics)
+            col1, col2, col3, col4 = st.columns(4)
+            col1.metric("Limits Checked", summary['total_checked'])
+            col2.metric("OK ✅", summary['ok'])
+            col3.metric("Warnings ⚠️", summary['warnings'])
+            col4.metric("Breaches 🚨", summary['breaches'])
+            
+            # Display limit results
+            if limit_results:
+                limit_df_data = []
+                for result in limit_results:
+                    status_emoji = "✅" if result.is_ok() else ("⚠️" if result.is_warning() else "🚨")
+                    
+                    limit_df_data.append({
+                        'Status': status_emoji,
+                        'Metric': result.metric_name.replace('_', ' ').title(),
+                        'Current Value': f"${abs(result.current_value):,.0f}",
+                        'Utilization': f"{result.utilization_pct:.1f}%",
+                        'Warning Level': f"${result.limit.warning_threshold:,.0f}",
+                        'Breach Level': f"${result.limit.breach_threshold:,.0f}",
+                    })
+                
+                limit_df = pd.DataFrame(limit_df_data)
+                
+                # Color-code by status
+                def highlight_status(row):
+                    if row['Status'] == '🚨':
+                        return ['background-color: #ffcccc'] * len(row)
+                    elif row['Status'] == '⚠️':
+                        return ['background-color: #ffffcc'] * len(row)
+                    else:
+                        return [''] * len(row)
+                
+                st.dataframe(limit_df.style.apply(highlight_status, axis=1), use_container_width=True)
+                
+                # Show breaches prominently
+                breaches = limit_checker.get_breaches(metrics)
+                if breaches:
+                    st.error(f"🚨 **{len(breaches)} LIMIT BREACH(ES) DETECTED**")
+                    for breach in breaches:
+                        st.error(f"- {breach.metric_name}: {breach.message}")
+                
+                warnings = limit_checker.get_warnings(metrics)
+                if warnings:
+                    st.warning(f"⚠️ {len(warnings)} limit(s) at warning level")
         
         # Key Rate DV01
         st.subheader("Key Rate DV01 Analysis")

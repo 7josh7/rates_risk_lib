@@ -6,6 +6,7 @@ Provides:
 - DV01 and modified duration
 - Key-rate/partial durations
 - Convexity calculations
+- Risk limits framework
 """
 
 from .bumping import (
@@ -23,6 +24,13 @@ from .keyrate import (
     KeyRateDV01,
     STANDARD_KEY_RATE_TENORS,
 )
+from .limits import (
+    LimitLevel,
+    LimitValue,
+    RiskLimits,
+    LimitCheckResult,
+    RiskLimitChecker,
+)
 
 __all__ = [
     "BumpEngine",
@@ -34,4 +42,9 @@ __all__ = [
     "KeyRateEngine",
     "KeyRateDV01",
     "STANDARD_KEY_RATE_TENORS",
+    "LimitLevel",
+    "LimitValue",
+    "RiskLimits",
+    "LimitCheckResult",
+    "RiskLimitChecker",
 ]
