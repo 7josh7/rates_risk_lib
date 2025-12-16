@@ -48,6 +48,7 @@ from rateslib import (
     # Market state / SABR
     MarketState, CurveState, normalize_vol_quotes, build_sabr_surface,
     price_trade, risk_trade,
+    DEFAULT_LIMITS, evaluate_limits, limits_to_table,
     # Conventions
     DayCount, Conventions,
     DateUtils,
@@ -139,7 +140,25 @@ def load_historical_rates():
 def load_positions():
     """Load portfolio positions."""
     paths = get_data_paths()
-    return pd.read_csv(paths["book"] / "positions.csv", comment="#")
+    df = pd.read_csv(paths["book"] / "positions.csv", comment="#")
+    # Append a default ATM payer swaption to ensure options coverage in demo views
+    default_swaption = {
+        "position_id": "POSOPT1",
+        "instrument_type": "SWAPTION",
+        "instrument_id": "SWPT_1Y5Y",
+        "notional": 5_000_000,
+        "direction": "PAYER",
+        "maturity_date": "",
+        "coupon": 0.0,
+        "entry_date": "",
+        "entry_price": 0.0,
+        "expiry_tenor": "1Y",
+        "swap_tenor": "5Y",
+        "strike": "ATM",
+        "vol_type": "NORMAL",
+    }
+    df = pd.concat([df, pd.DataFrame([default_swaption])], ignore_index=True)
+    return df
 
 
 @st.cache_data
@@ -208,6 +227,51 @@ def build_market_state(discount_curve, projection_curve, valuation_date, vol_quo
         sabr_surface = None
 
     return MarketState(curve=curve_state, sabr_surface=sabr_surface, asof=str(valuation_date)), normalized
+
+
+def market_snapshot(valuation_date, nss_model, sabr_surface):
+    """Return dict for snapshot display."""
+    sabr_bucket_count = len(sabr_surface.params_by_bucket) if sabr_surface and getattr(sabr_surface, "params_by_bucket", None) else 0
+    sabr_beta = sabr_surface.convention.get("beta") if sabr_surface and getattr(sabr_surface, "convention", None) else None
+    snapshot = {
+        "Valuation Date": str(valuation_date),
+        "Curve Source": "OIS bootstrap + NSS",
+        "NSS beta0": getattr(getattr(nss_model, "params", None), "beta0", None),
+        "NSS beta1": getattr(getattr(nss_model, "params", None), "beta1", None),
+        "NSS beta2": getattr(getattr(nss_model, "params", None), "beta2", None),
+        "NSS beta3": getattr(getattr(nss_model, "params", None), "beta3", None),
+        "NSS lambda1": getattr(getattr(nss_model, "params", None), "lambda1", None),
+        "NSS lambda2": getattr(getattr(nss_model, "params", None), "lambda2", None),
+        "SABR beta policy": sabr_beta,
+        "SABR buckets": sabr_bucket_count,
+    }
+    return snapshot
+
+
+def format_snapshot(snapshot: dict):
+    lines = []
+    for k, v in snapshot.items():
+        if v is None:
+            continue
+        if isinstance(v, float):
+            lines.append(f"- {k}: {v:.6f}")
+        else:
+            lines.append(f"- {k}: {v}")
+    return "\n".join(lines)
+
+
+def extract_fallback_messages(sabr_surface):
+    messages = []
+    if sabr_surface is None:
+        return messages
+    for bucket, params in sabr_surface.params_by_bucket.items():
+        diag = getattr(params, "diagnostics", {}) or {}
+        for fb in diag.get("fallback_from", []):
+            req = fb.get("requested")
+            used = fb.get("used")
+            if req and used:
+                messages.append(f"Bucket {req} missing \u2192 using nearest {used}")
+    return messages
 
 
 # =============================================================================
@@ -461,6 +525,23 @@ def plot_pnl_attribution(pnl_components):
     return fig
 
 
+def render_limit_table(limit_results):
+    """Return a styled DataFrame for limits."""
+    import pandas as pd
+    rows = limits_to_table(limit_results)
+    df = pd.DataFrame(rows)
+    if df.empty:
+        return None
+    def color_status(val):
+        if val == "Breach":
+            return "background-color: #f8d7da; color: #721c24;"
+        if val == "Warning":
+            return "background-color: #fff3cd; color: #856404;"
+        return ""
+    styled = df.style.map(color_status, subset=["status"])
+    return styled
+
+
 # =============================================================================
 # Main Application
 # =============================================================================
@@ -504,6 +585,8 @@ def main():
     market_state, normalized_vol_quotes = build_market_state(
         ois_curve, ois_curve, valuation_date, vol_quotes_df
     )
+    snapshot_data = market_snapshot(valuation_date, nss_model, market_state.sabr_surface)
+    fallback_messages = extract_fallback_messages(market_state.sabr_surface)
     
     # Create tabs for different sections
     tab1, tab2, tab3, tab4, tab5, tab6, tab7, tab8 = st.tabs([
@@ -527,14 +610,14 @@ def main():
         
         with col1:
             st.subheader("OIS Curve Bootstrap")
-            st.dataframe(ois_quotes.style.format({'rate': '{:.4%}'}), use_container_width=True)
+            st.dataframe(ois_quotes.style.format({'rate': '{:.4%}'}), width="stretch")
             
             st.metric("Number of Instruments", len(ois_quotes))
             st.metric("Curve Nodes", len(ois_curve.get_nodes()))
             
         with col2:
             st.subheader("Treasury NSS Parameters")
-            st.dataframe(treasury_quotes.style.format({'yield': '{:.4%}'}), use_container_width=True)
+            st.dataframe(treasury_quotes.style.format({'yield': '{:.4%}'}), width="stretch")
             
             st.write("**NSS Fitted Parameters:**")
             st.write(f"β₀ (level): {nss_model.params.beta0:.6f}")
@@ -544,22 +627,27 @@ def main():
             st.write(f"λ₁: {nss_model.params.lambda1:.6f}")
             st.write(f"λ₂: {nss_model.params.lambda2:.6f}")
         
-        st.plotly_chart(plot_curve_comparison(ois_curve, treasury_curve, valuation_date), 
-                        use_container_width=True)
+        st.plotly_chart(plot_curve_comparison(ois_curve, treasury_curve, valuation_date), width="stretch")
         
         col1, col2 = st.columns(2)
         with col1:
-            st.plotly_chart(plot_discount_factors(ois_curve, treasury_curve, valuation_date),
-                           use_container_width=True)
+            st.plotly_chart(plot_discount_factors(ois_curve, treasury_curve, valuation_date), width="stretch")
         with col2:
-            st.plotly_chart(plot_forward_rates(ois_curve, valuation_date, 'OIS Forward Rates'),
-                           use_container_width=True)
+            st.plotly_chart(plot_forward_rates(ois_curve, valuation_date, 'OIS Forward Rates'), width="stretch")
     
     # =========================================================================
     # TAB 2: Pricing
     # =========================================================================
     with tab2:
         st.header("Instrument Pricing")
+
+        # Market snapshot banner
+        if snapshot_data:
+            st.markdown("**Market Snapshot**")
+            st.markdown(format_snapshot(snapshot_data))
+        if fallback_messages:
+            for msg in fallback_messages:
+                st.info(msg)
         
         pricing_type = st.selectbox("Select Instrument Type", 
                                      ["Bond", "Swap", "Futures"])
@@ -702,9 +790,19 @@ def main():
             if not fwd_guess.empty:
                 forward_rate = float(fwd_guess["F0"].iloc[0])
             else:
-                forward_rate = 0.0
+                # Fallback: compute forward swap rate from curves
+                fallback_pricer = SwapPricer(ois_curve, ois_curve)
+                try:
+                    forward_rate, _ = fallback_pricer.forward_swap_rate(
+                        DateUtils.tenor_to_years(chosen_expiry),
+                        DateUtils.tenor_to_years(chosen_tenor)
+                    )
+                except Exception:
+                    forward_rate = 0.0
 
             strike_rate = forward_rate + strike_offset / 10000.0
+            if strike_rate <= 0:
+                strike_rate = max(forward_rate, 1e-6)
             notional_opt = st.number_input("Notional ($)", value=10_000_000, step=1_000_000)
 
             trade = {
@@ -742,7 +840,7 @@ def main():
                             "max_abs_error": "{:.6f}",
                         }
                     ),
-                    use_container_width=True,
+                    width="stretch",
                 )
 
                 if risk_result:
@@ -756,6 +854,12 @@ def main():
     # =========================================================================
     with tab3:
         st.header("Risk Metrics")
+        if snapshot_data:
+            st.markdown("**Market Snapshot**")
+            st.markdown(format_snapshot(snapshot_data))
+        if fallback_messages:
+            for msg in fallback_messages:
+                st.info(msg)
         
         # Portfolio-level metrics
         st.subheader("Portfolio Risk Summary")
@@ -799,7 +903,8 @@ def main():
         kr_dv01s = [total_dv01 / 4] * 4  # Simplified equal distribution
         kr_df = pd.DataFrame({'Tenor': kr_tenors, 'DV01': kr_dv01s})
         
-        st.plotly_chart(plot_key_rate_ladder(kr_df), use_container_width=True)
+        st.plotly_chart(plot_key_rate_ladder(kr_df), width="stretch")
+        worst_keyrate = max(abs(v) for v in kr_dv01s) if kr_dv01s else 0.0
         
         # Convexity analysis
         st.subheader("Convexity Analysis")
@@ -821,14 +926,44 @@ def main():
                 diag_df.style.format(
                     {"sigma_atm": "{:.5f}", "nu": "{:.4f}", "rho": "{:.3f}", "rmse": "{:.6f}"}
                 ),
-                use_container_width=True,
+                width="stretch",
             )
+
+        # Limit checks
+        st.subheader("Risk Limits")
+        sabr_rmse_max = None
+        sabr_bucket_count = 0
+        if market_state.sabr_surface and getattr(market_state.sabr_surface, "params_by_bucket", None):
+            sabr_bucket_count = len(market_state.sabr_surface.params_by_bucket)
+            rmses = []
+            for params in market_state.sabr_surface.params_by_bucket.values():
+                diag = getattr(params, "diagnostics", {}) or {}
+                if "rmse" in diag:
+                    rmses.append(diag["rmse"])
+            if rmses:
+                sabr_rmse_max = max(rmses)
+        metrics_for_limits = {
+            "total_dv01": abs(total_dv01),
+            "worst_keyrate_dv01": worst_keyrate,
+            "sabr_rmse_max": sabr_rmse_max,
+            "sabr_bucket_count": sabr_bucket_count,
+        }
+        limit_results = evaluate_limits(metrics_for_limits, DEFAULT_LIMITS)
+        table = render_limit_table(limit_results)
+        if table is not None:
+            st.dataframe(table, width="stretch")
     
     # =========================================================================
     # TAB 4: VaR Analysis
     # =========================================================================
     with tab4:
         st.header("Value at Risk (VaR) Analysis")
+        if snapshot_data:
+            st.markdown("**Market Snapshot**")
+            st.markdown(format_snapshot(snapshot_data))
+        if fallback_messages:
+            for msg in fallback_messages:
+                st.info(msg)
         
         var_method = st.selectbox("VaR Method", 
                                   ["Historical Simulation", "Monte Carlo", "Stressed VaR"])
@@ -855,7 +990,18 @@ def main():
             col4.metric("ES 99%", f"${es_99:,.0f}")
             
             st.plotly_chart(plot_var_distribution(historical_pnl, var_95, var_99),
-                           use_container_width=True)
+                           width="stretch")
+            
+            metrics_for_limits = {
+                "var_95": var_95,
+                "var_99": var_99,
+                "es_975": es_99 if 'es_99' in locals() else es_95,
+            }
+            limit_results = evaluate_limits(metrics_for_limits, DEFAULT_LIMITS)
+            table = render_limit_table(limit_results)
+            if table is not None:
+                st.subheader("VaR Limits")
+                st.dataframe(table, width="stretch")
         
         elif var_method == "Monte Carlo":
             st.subheader("Monte Carlo VaR")
@@ -874,7 +1020,17 @@ def main():
             col2.metric("VaR 99%", f"${var_99:,.0f}")
             
             st.plotly_chart(plot_var_distribution(mc_pnl, var_95, var_99),
-                           use_container_width=True)
+                           width="stretch")
+            
+            metrics_for_limits = {
+                "var_95": var_95,
+                "var_99": var_99,
+            }
+            limit_results = evaluate_limits(metrics_for_limits, DEFAULT_LIMITS)
+            table = render_limit_table(limit_results)
+            if table is not None:
+                st.subheader("VaR Limits")
+                st.dataframe(table, width="stretch")
         
         elif var_method == "Stressed VaR":
             st.subheader("Stressed VaR")
@@ -891,6 +1047,16 @@ def main():
             col1, col2 = st.columns(2)
             col1.metric("Stressed VaR 95%", f"${stressed_var_95:,.0f}")
             col2.metric("Stressed VaR 99%", f"${stressed_var_99:,.0f}")
+            
+            metrics_for_limits = {
+                "var_95": stressed_var_95,
+                "var_99": stressed_var_99,
+            }
+            limit_results = evaluate_limits(metrics_for_limits, DEFAULT_LIMITS)
+            table = render_limit_table(limit_results)
+            if table is not None:
+                st.subheader("VaR Limits")
+                st.dataframe(table, width="stretch")
     
     # =========================================================================
     # TAB 5: Scenarios
@@ -914,17 +1080,25 @@ def main():
             ]
         }
         scenarios_df = pd.DataFrame(scenarios_data)
+        worst_scenario = scenarios_df['P&L'].min() if not scenarios_df.empty else 0.0
         
         # Display table
         st.dataframe(
             scenarios_df.style.format({'P&L': '${:,.0f}'}).background_gradient(
                 subset=['P&L'], cmap='RdYlGn', vmin=-300000, vmax=300000
             ),
-            use_container_width=True
+            width="stretch"
         )
+        # Scenario limits
+        scenario_metrics = {"scenario_worst": abs(worst_scenario)}
+        scenario_limits = evaluate_limits(scenario_metrics, DEFAULT_LIMITS)
+        scen_table = render_limit_table(scenario_limits)
+        if scen_table is not None:
+            st.subheader("Scenario Limits")
+            st.dataframe(scen_table, width="stretch")
         
         # Waterfall chart
-        st.plotly_chart(plot_scenario_waterfall(scenarios_df), use_container_width=True)
+        st.plotly_chart(plot_scenario_waterfall(scenarios_df), width="stretch")
         
         # Custom scenario builder
         st.subheader("Custom Scenario Builder")
@@ -976,7 +1150,7 @@ def main():
         col3.metric("Residual", f"${pnl_comp.residual:,.0f}")
         
         # Attribution breakdown
-        st.plotly_chart(plot_pnl_attribution(pnl_comp), use_container_width=True)
+        st.plotly_chart(plot_pnl_attribution(pnl_comp), width="stretch")
         
         # Detailed breakdown table
         st.subheader("Detailed Attribution")
@@ -993,7 +1167,7 @@ def main():
             attribution_df.style.format({'P&L ($)': '${:,.2f}'}).background_gradient(
                 subset=['P&L ($)'], cmap='RdYlGn'
             ),
-            use_container_width=True
+            width="stretch"
         )
     
     # =========================================================================
@@ -1058,7 +1232,8 @@ def main():
                 height=400
             )
             
-            st.plotly_chart(fig, use_container_width=True)
+            st.plotly_chart(fig, width="stretch")
+            # plotly_chart now prefers width="stretch" in Streamlit >=1.52
         
         # Liquidity metrics by instrument
         st.subheader("Liquidity Metrics by Instrument Type")
@@ -1069,7 +1244,7 @@ def main():
             'Est. Liq. Time (days)': [1, 1, 1, 2, 2, 3, 1]
         })
         
-        st.dataframe(liquidity_df, use_container_width=True)
+        st.dataframe(liquidity_df, width="stretch")
     
     # =========================================================================
     # TAB 8: Data Explorer
@@ -1083,14 +1258,14 @@ def main():
         
         if data_view == "Market Quotes":
             st.subheader("OIS Quotes")
-            st.dataframe(ois_quotes, use_container_width=True)
+            st.dataframe(ois_quotes, width="stretch")
             
             st.subheader("Treasury Quotes")
-            st.dataframe(treasury_quotes, use_container_width=True)
+            st.dataframe(treasury_quotes, width="stretch")
         
         elif data_view == "Portfolio Positions":
             st.subheader("Current Portfolio Positions")
-            st.dataframe(positions_df, use_container_width=True)
+            st.dataframe(positions_df, width="stretch")
             
             # Download button
             csv = positions_df.to_csv(index=False)
@@ -1103,7 +1278,7 @@ def main():
         
         elif data_view == "Historical Rates":
             st.subheader("Historical Rate Data")
-            st.dataframe(historical_rates.head(20), use_container_width=True)
+            st.dataframe(historical_rates.head(20), width="stretch")
             st.info(f"Total historical observations: {len(historical_rates)}")
         
         elif data_view == "Curve Nodes":
@@ -1124,7 +1299,7 @@ def main():
                 })
             
             nodes_df = pd.DataFrame(nodes_data)
-            st.dataframe(nodes_df, use_container_width=True)
+            st.dataframe(nodes_df, width="stretch")
     
     # Footer
     st.markdown("---")

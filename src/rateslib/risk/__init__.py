@@ -23,6 +23,13 @@ from .keyrate import (
     KeyRateDV01,
     STANDARD_KEY_RATE_TENORS,
 )
+from .limits import (
+    LimitDefinition,
+    LimitResult,
+    DEFAULT_LIMITS,
+    evaluate_limits,
+    limits_to_table,
+)
 
 __all__ = [
     "BumpEngine",
@@ -34,4 +41,9 @@ __all__ = [
     "KeyRateEngine",
     "KeyRateDV01",
     "STANDARD_KEY_RATE_TENORS",
+    "LimitDefinition",
+    "LimitResult",
+    "DEFAULT_LIMITS",
+    "evaluate_limits",
+    "limits_to_table",
 ]

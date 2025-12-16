@@ -36,6 +36,11 @@ from .risk import (
     KeyRateEngine,
     InstrumentRisk,
     PortfolioRisk,
+    LimitDefinition,
+    LimitResult,
+    DEFAULT_LIMITS,
+    evaluate_limits,
+    limits_to_table,
 )
 
 # VaR
@@ -122,6 +127,11 @@ __all__ = [
     "KeyRateEngine",
     "InstrumentRisk",
     "PortfolioRisk",
+    "LimitDefinition",
+    "LimitResult",
+    "DEFAULT_LIMITS",
+    "evaluate_limits",
+    "limits_to_table",
     # VaR
     "HistoricalSimulation",
     "MonteCarloVaR",

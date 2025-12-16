@@ -110,12 +110,27 @@ def price_trade(trade: Dict[str, Any], market_state: MarketState) -> PricerOutpu
     if inst == "SWAPTION":
         expiry_tenor = trade["expiry_tenor"]
         swap_tenor = trade["swap_tenor"]
-        strike = float(trade.get("strike"))
+        strike_raw = trade.get("strike")
         payer_receiver = str(trade.get("payer_receiver", "PAYER")).upper()
         notional = float(trade.get("notional", 1.0))
         vol_type = str(trade.get("vol_type", "NORMAL")).upper()
 
         pricer = SwaptionPricer(curve_state.discount_curve, curve_state.projection_curve)
+        forward, annuity = pricer.forward_swap_rate(
+            expiry=DateUtils.tenor_to_years(expiry_tenor),
+            tenor=DateUtils.tenor_to_years(swap_tenor),
+        )
+        # Determine strike, defaulting to ATM if missing/invalid
+        if strike_raw is None or (isinstance(strike_raw, str) and strike_raw.upper() == "ATM"):
+            strike = forward
+        else:
+            try:
+                strike = float(strike_raw)
+            except Exception:
+                strike = forward
+        if strike <= 0:
+            strike = max(forward, 1e-6)
+
         sabr_params = market_state.get_sabr_params(expiry_tenor, swap_tenor)
 
         if sabr_params:
@@ -135,17 +150,14 @@ def price_trade(trade: Dict[str, Any], market_state: MarketState) -> PricerOutpu
                 "implied_vol": result.implied_vol,
                 "vol_type": vol_type,
                 "source_bucket": make_bucket_key(expiry_tenor, swap_tenor),
+                "strike": strike,
             }
             return PricerOutput(inst, pv, details)
 
         # Fall back to flat vol pricing
-        S, annuity = pricer.forward_swap_rate(
-            expiry=DateUtils.tenor_to_years(expiry_tenor),
-            tenor=DateUtils.tenor_to_years(swap_tenor),
-        )
         vol = float(trade.get("vol", 0.0))
         pv = pricer.price(
-            S=S,
+            S=forward,
             K=strike,
             T=DateUtils.tenor_to_years(expiry_tenor),
             annuity=annuity,
@@ -158,13 +170,13 @@ def price_trade(trade: Dict[str, Any], market_state: MarketState) -> PricerOutpu
         return PricerOutput(
             instrument_type=inst,
             pv=pv,
-            details={"forward": S, "annuity": annuity, "implied_vol": vol, "vol_type": vol_type},
+            details={"forward": forward, "annuity": annuity, "implied_vol": vol, "vol_type": vol_type, "strike": strike},
         )
 
     if inst in {"CAPLET", "CAP", "CAPFLOOR"}:
         start_date = trade["start_date"]
         end_date = trade["end_date"]
-        strike = float(trade.get("strike"))
+        strike_raw = trade.get("strike")
         notional = float(trade.get("notional", 1.0))
         vol_type = str(trade.get("vol_type", "NORMAL")).upper()
 
@@ -175,7 +187,7 @@ def price_trade(trade: Dict[str, Any], market_state: MarketState) -> PricerOutpu
             result = pricer.price_with_sabr(
                 start_date=start_date,
                 end_date=end_date,
-                K=strike,
+                K=float(strike_raw if strike_raw is not None else 0.0),
                 sabr_params=sabr_params.to_sabr_params(),
                 vol_type=vol_type,
                 notional=notional,
@@ -207,6 +219,15 @@ def price_trade(trade: Dict[str, Any], market_state: MarketState) -> PricerOutpu
         vol = float(trade.get("vol", 0.0))
         F = pricer.forward_rate(start=expiry_years, end=expiry_years + delta_t)
         df = curve_state.discount_curve.discount_factor(expiry_years + delta_t)
+        if strike_raw is None or (isinstance(strike_raw, str) and strike_raw.upper() == "ATM"):
+            strike = F
+        else:
+            try:
+                strike = float(strike_raw)
+            except Exception:
+                strike = F
+        if strike <= 0:
+            strike = max(F, 1e-6)
         pv = pricer.price(
             F=F,
             K=strike,
@@ -291,7 +312,7 @@ def risk_trade(trade: Dict[str, Any], market_state: MarketState, method: str = "
     if inst in {"CAPLET", "CAP", "CAPFLOOR"}:
         expiry_tenor = trade.get("expiry_tenor", "0D")
         index_tenor = trade.get("index_tenor", "3M")
-        strike = float(trade.get("strike"))
+        strike_raw = trade.get("strike")
         notional = float(trade.get("notional", 1.0))
         vol_type = str(trade.get("vol_type", "NORMAL")).upper()
 
@@ -312,6 +333,15 @@ def risk_trade(trade: Dict[str, Any], market_state: MarketState, method: str = "
         end = start + delta_t
         forward = pricer.forward_rate(start, end) if end > start else 0.0
         annuity = curve_state.discount_curve.discount_factor(end) if end >= 0 else 1.0
+        if strike_raw is None or (isinstance(strike_raw, str) and strike_raw.upper() == "ATM"):
+            strike = forward
+        else:
+            try:
+                strike = float(strike_raw)
+            except Exception:
+                strike = forward
+        if strike <= 0:
+            strike = max(forward, 1e-6)
         risk_engine = SabrOptionRisk(vol_type=vol_type)
         sens = risk_engine.parameter_sensitivities(
             F=forward,
