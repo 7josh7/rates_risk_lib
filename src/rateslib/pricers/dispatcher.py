@@ -184,10 +184,29 @@ def price_trade(trade: Dict[str, Any], market_state: MarketState) -> PricerOutpu
         sabr_params = market_state.get_sabr_params(trade.get("expiry_tenor", ""), trade.get("index_tenor", ""), allow_fallback=True)
 
         if sabr_params:
+            # Compute forward to determine strike
+            from ..conventions import year_fraction
+            anchor = curve_state.discount_curve.anchor_date
+            day_count = curve_state.discount_curve.day_count
+            T_start = year_fraction(anchor, start_date, day_count)
+            T_end = year_fraction(anchor, end_date, day_count)
+            F = pricer.forward_rate(T_start, T_end)
+            
+            # Resolve strike
+            if strike_raw is None or (isinstance(strike_raw, str) and strike_raw.upper() == "ATM"):
+                K = F
+            else:
+                try:
+                    K = float(strike_raw)
+                except Exception:
+                    K = F
+            if K <= 0:
+                K = max(F, 1e-6)
+            
             result = pricer.price_with_sabr(
                 start_date=start_date,
                 end_date=end_date,
-                K=float(strike_raw if strike_raw is not None else 0.0),
+                K=K,
                 sabr_params=sabr_params.to_sabr_params(),
                 vol_type=vol_type,
                 notional=notional,
