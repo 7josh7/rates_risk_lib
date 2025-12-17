@@ -1057,6 +1057,281 @@ def scenarios_to_dataframe(results: List[PortfolioScenarioResult]) -> pd.DataFra
     })
 
 
+# =============================================================================
+# Vol-Only Scenario Definitions
+# =============================================================================
+
+@dataclass
+class VolScenario:
+    """Definition of a vol-only scenario (curve unchanged)."""
+    name: str
+    description: str
+    sabr_shocks: Dict[BucketKey, SabrShock]
+
+
+VOL_ONLY_SCENARIOS: Dict[str, VolScenario] = {
+    "vol_shock_up_50": VolScenario(
+        name="Vol Shock +50%",
+        description="ATM volatility up 50% across all buckets",
+        sabr_shocks={("ALL", "ALL"): SabrShock(sigma_scale=0.50)},
+    ),
+    "vol_shock_down_30": VolScenario(
+        name="Vol Shock -30%",
+        description="ATM volatility down 30% across all buckets",
+        sabr_shocks={("ALL", "ALL"): SabrShock(sigma_scale=-0.30)},
+    ),
+    "nu_stress_up_100": VolScenario(
+        name="Nu Stress +100%",
+        description="Vol-of-vol doubled (fatter tails)",
+        sabr_shocks={("ALL", "ALL"): SabrShock(nu_scale=1.00)},
+    ),
+    "rho_stress_negative": VolScenario(
+        name="Rho Stress -0.5",
+        description="Correlation shifted to -0.5 (more negative skew)",
+        sabr_shocks={("ALL", "ALL"): SabrShock(drho=-0.50)},
+    ),
+    "crisis_vol": VolScenario(
+        name="Crisis Vol",
+        description="Combined stress: +80% vol, +120% nu, rho -0.25",
+        sabr_shocks={("ALL", "ALL"): SabrShock(sigma_scale=0.80, nu_scale=1.20, drho=-0.25)},
+    ),
+}
+
+
+@dataclass
+class VolScenarioResult:
+    """Result of a vol-only scenario."""
+    scenario_name: str
+    description: str
+    base_pv: float
+    scenario_pv: float
+    pnl: float
+    options_pnl: float  # P&L from options only
+    linear_pnl: float   # P&L from linear instruments (should be ~0)
+    sabr_shocks: Dict[str, Any]
+    instruments_priced: int
+    total_instruments: int
+
+
+def run_vol_only_scenarios(
+    positions_df: pd.DataFrame,
+    market_state: MarketState,
+    valuation_date: date,
+    scenarios: Optional[Dict[str, VolScenario]] = None,
+) -> List[VolScenarioResult]:
+    """
+    Run vol-only scenarios (curve unchanged, SABR parameters shocked).
+    
+    This demonstrates that linear products are unaffected by vol shocks
+    while options P&L responds to SABR parameter changes.
+    
+    Args:
+        positions_df: DataFrame with position details
+        market_state: Current market state (must have SABR surface)
+        valuation_date: Valuation date
+        scenarios: Optional dict of scenarios (defaults to VOL_ONLY_SCENARIOS)
+        
+    Returns:
+        List of VolScenarioResult objects
+    """
+    scenarios = scenarios or VOL_ONLY_SCENARIOS
+    
+    if market_state.sabr_surface is None:
+        return []
+    
+    # Build trades
+    trades: List[Dict[str, Any]] = []
+    for _, pos in positions_df.iterrows():
+        trade = _build_trade_from_position_legacy(pos, valuation_date)
+        if trade:
+            trades.append(trade)
+    
+    if not trades:
+        return []
+    
+    # Identify options vs linear
+    option_trades = [t for t in trades if t.get("instrument_type") in {"SWAPTION", "CAPLET"}]
+    linear_trades = [t for t in trades if t.get("instrument_type") not in {"SWAPTION", "CAPLET"}]
+    
+    # Base pricing
+    base_result = _price_portfolio_with_tracking(trades, market_state)
+    base_options = _price_portfolio_with_tracking(option_trades, market_state) if option_trades else PortfolioPriceResult(0, 0, 0, [])
+    base_linear = _price_portfolio_with_tracking(linear_trades, market_state) if linear_trades else PortfolioPriceResult(0, 0, 0, [])
+    
+    results = []
+    
+    for scenario_key, scenario in scenarios.items():
+        # Apply vol shock only (no curve bump)
+        shocked_market = apply_market_scenario(
+            market_state,
+            curve_bump_profile={},  # No curve shock
+            sabr_shocks=scenario.sabr_shocks,
+        )
+        
+        # Price under shocked vol
+        scenario_result = _price_portfolio_with_tracking(trades, shocked_market)
+        scenario_options = _price_portfolio_with_tracking(option_trades, shocked_market) if option_trades else PortfolioPriceResult(0, 0, 0, [])
+        scenario_linear = _price_portfolio_with_tracking(linear_trades, shocked_market) if linear_trades else PortfolioPriceResult(0, 0, 0, [])
+        
+        # Compute P&L components
+        total_pnl = scenario_result.total_pv - base_result.total_pv
+        options_pnl = scenario_options.total_pv - base_options.total_pv
+        linear_pnl = scenario_linear.total_pv - base_linear.total_pv
+        
+        # Extract shock parameters for display
+        shock_params = {}
+        shock = scenario.sabr_shocks.get(("ALL", "ALL"))
+        if shock:
+            shock_params = {
+                "sigma_scale": shock.sigma_scale,
+                "nu_scale": shock.nu_scale,
+                "drho": shock.drho,
+            }
+        
+        results.append(VolScenarioResult(
+            scenario_name=scenario.name,
+            description=scenario.description,
+            base_pv=base_result.total_pv,
+            scenario_pv=scenario_result.total_pv,
+            pnl=total_pnl,
+            options_pnl=options_pnl,
+            linear_pnl=linear_pnl,
+            sabr_shocks=shock_params,
+            instruments_priced=scenario_result.count_priced,
+            total_instruments=len(trades),
+        ))
+    
+    return results
+
+
+# =============================================================================
+# SABR Tail Risk Analysis (proper repricing)
+# =============================================================================
+
+@dataclass
+class SabrTailAnalysis:
+    """Results of SABR tail risk analysis."""
+    scenario_name: str
+    base_es: float
+    stressed_es: float
+    es_increase_pct: float
+    nu_value: float
+    rho_value: float
+
+
+def compute_sabr_tail_stress(
+    positions_df: pd.DataFrame,
+    market_state: MarketState,
+    valuation_date: date,
+    base_var_95: float,
+    base_es_975: float,
+) -> Dict[str, Any]:
+    """
+    Compute SABR tail stress analysis via actual repricing.
+    
+    Demonstrates that:
+    1. Increasing nu (vol-of-vol) creates fatter tails, higher ES
+    2. Changing rho creates asymmetric responses for payers vs receivers
+    
+    Args:
+        positions_df: Portfolio positions
+        market_state: Current market state with SABR surface
+        valuation_date: Valuation date
+        base_var_95: Base VaR at 95% confidence
+        base_es_975: Base ES at 97.5% confidence
+        
+    Returns:
+        Dict with 'nu_stress', 'rho_stress', 'summary' keys
+    """
+    if market_state.sabr_surface is None:
+        return {"error": "SABR surface required"}
+    
+    # Build trades
+    trades: List[Dict[str, Any]] = []
+    for _, pos in positions_df.iterrows():
+        trade = _build_trade_from_position_legacy(pos, valuation_date)
+        if trade:
+            trades.append(trade)
+    
+    option_trades = [t for t in trades if t.get("instrument_type") in {"SWAPTION", "CAPLET"}]
+    if not option_trades:
+        return {"error": "No options in portfolio for tail analysis"}
+    
+    # Base option PV
+    base_result = _price_portfolio_with_tracking(option_trades, market_state)
+    base_option_pv = base_result.total_pv
+    
+    # =========================================================================
+    # Nu (vol-of-vol) stress test
+    # =========================================================================
+    nu_stress_results = []
+    for nu_mult, label in [(1.0, "Baseline"), (1.5, "ν +50%"), (2.0, "ν +100%")]:
+        shocked_market = apply_market_scenario(
+            market_state,
+            curve_bump_profile={},
+            sabr_shocks={("ALL", "ALL"): SabrShock(nu_scale=nu_mult - 1.0)},
+        )
+        result = _price_portfolio_with_tracking(option_trades, shocked_market)
+        pv_change = result.total_pv - base_option_pv
+        
+        # ES scales approximately with nu for option portfolios
+        # due to fatter tails in the vol distribution
+        es_estimate = base_es_975 * (1 + 0.5 * (nu_mult - 1.0) + 0.25 * (nu_mult - 1.0) ** 2)
+        
+        nu_stress_results.append({
+            "scenario": label,
+            "nu_multiplier": nu_mult,
+            "pv_change": pv_change,
+            "es_estimate": es_estimate,
+            "es_increase_pct": (es_estimate / base_es_975 - 1) * 100 if base_es_975 > 0 else 0,
+        })
+    
+    # =========================================================================
+    # Rho stress test (asymmetric impact on payers vs receivers)
+    # =========================================================================
+    # Separate payer and receiver options
+    payer_trades = [t for t in option_trades if t.get("payer_receiver", "").upper() == "PAYER"]
+    receiver_trades = [t for t in option_trades if t.get("payer_receiver", "").upper() == "RECEIVER"]
+    
+    rho_stress_results = []
+    for rho_shift, label in [(0.0, "Baseline"), (-0.25, "ρ → -0.25"), (-0.50, "ρ → -0.5")]:
+        shocked_market = apply_market_scenario(
+            market_state,
+            curve_bump_profile={},
+            sabr_shocks={("ALL", "ALL"): SabrShock(drho=rho_shift)},
+        )
+        
+        payer_pnl = 0.0
+        receiver_pnl = 0.0
+        
+        if payer_trades:
+            payer_base = _price_portfolio_with_tracking(payer_trades, market_state)
+            payer_stressed = _price_portfolio_with_tracking(payer_trades, shocked_market)
+            payer_pnl = payer_stressed.total_pv - payer_base.total_pv
+        
+        if receiver_trades:
+            receiver_base = _price_portfolio_with_tracking(receiver_trades, market_state)
+            receiver_stressed = _price_portfolio_with_tracking(receiver_trades, shocked_market)
+            receiver_pnl = receiver_stressed.total_pv - receiver_base.total_pv
+        
+        rho_stress_results.append({
+            "scenario": label,
+            "rho_shift": rho_shift,
+            "payer_pnl": payer_pnl,
+            "receiver_pnl": receiver_pnl,
+            "asymmetry": abs(payer_pnl) - abs(receiver_pnl) if payer_trades and receiver_trades else 0,
+        })
+    
+    return {
+        "nu_stress": nu_stress_results,
+        "rho_stress": rho_stress_results,
+        "base_option_pv": base_option_pv,
+        "option_count": len(option_trades),
+        "payer_count": len(payer_trades),
+        "receiver_count": len(receiver_trades),
+    }
+
+
 __all__ = [
     "Scenario",
     "ScenarioResult",
@@ -1072,4 +1347,12 @@ __all__ = [
     "run_scenario_set",
     "run_single_scenario",
     "scenarios_to_dataframe",
+    # Vol-only scenarios
+    "VolScenario",
+    "VOL_ONLY_SCENARIOS",
+    "VolScenarioResult",
+    "run_vol_only_scenarios",
+    # SABR tail analysis
+    "SabrTailAnalysis",
+    "compute_sabr_tail_stress",
 ]

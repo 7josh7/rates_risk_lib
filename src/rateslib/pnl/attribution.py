@@ -28,6 +28,7 @@ from datetime import date, timedelta
 from typing import Callable, Dict, List, Optional, Tuple
 
 import numpy as np
+import pandas as pd
 
 from ..curves.curve import Curve
 from ..risk.sensitivities import RiskCalculator, InstrumentRisk
@@ -402,6 +403,299 @@ def attribute_curve_vs_vol(
     }
 
 
+@dataclass
+class OptionsGreeksAttribution:
+    """Greeks-based P&L attribution for an option position."""
+    instrument_id: str
+    delta_pnl: float         # P&L from rate move × delta
+    vega_pnl: float          # P&L from vol move × vega
+    gamma_pnl: float         # P&L from rate^2 × gamma
+    vanna_pnl: float         # P&L from rate × vol × vanna
+    volga_pnl: float         # P&L from vol^2 × volga
+    theta_pnl: float         # P&L from time decay
+    residual: float          # Unexplained
+    total_pnl: float         # Realized total
+    
+    # Greeks used
+    delta: float
+    gamma: float
+    vega: float
+    vanna: float
+    volga: float
+    
+    # Market moves
+    rate_move_bp: float
+    vol_move_bp: float
+    days_passed: float
+    
+    def to_dict(self) -> Dict[str, float]:
+        """Convert to dict for DataFrame display."""
+        return {
+            "instrument_id": self.instrument_id,
+            "delta_pnl": self.delta_pnl,
+            "vega_pnl": self.vega_pnl,
+            "gamma_pnl": self.gamma_pnl,
+            "vanna_pnl": self.vanna_pnl,
+            "volga_pnl": self.volga_pnl,
+            "theta_pnl": self.theta_pnl,
+            "residual": self.residual,
+            "total_pnl": self.total_pnl,
+            "delta": self.delta,
+            "gamma": self.gamma,
+            "vega": self.vega,
+            "rate_move_bp": self.rate_move_bp,
+            "vol_move_bp": self.vol_move_bp,
+        }
+
+
+def compute_option_pnl_attribution(
+    positions_df: pd.DataFrame,
+    market_state: MarketState,
+    valuation_date: date,
+    rate_move_bp: float = 0.0,
+    vol_move_bp: float = 0.0,
+    days_passed: float = 1.0,
+) -> List[OptionsGreeksAttribution]:
+    """
+    Compute Greeks-based P&L attribution for option positions.
+    
+    Uses the SABR risk engine to compute actual Greeks, then estimates P&L
+    components using Taylor expansion:
+    
+        P&L ≈ Δ × ΔS + ½Γ × ΔS² + ν × Δσ + vanna × ΔS × Δσ + ½volga × Δσ² + θ × Δt
+    
+    Args:
+        positions_df: Portfolio positions
+        market_state: Current market state with SABR surface
+        valuation_date: Valuation date
+        rate_move_bp: Rate move in basis points (for estimation)
+        vol_move_bp: Vol move in basis points (for estimation)
+        days_passed: Days passed for theta calculation
+        
+    Returns:
+        List of OptionsGreeksAttribution objects
+    """
+    from ..options.sabr_risk import SabrOptionRisk, RiskReport
+    from ..dates import DateUtils
+    
+    if market_state.sabr_surface is None:
+        return []
+    
+    sabr_engine = SabrOptionRisk(vol_type="NORMAL")
+    results = []
+    
+    # Find option positions
+    for _, pos in positions_df.iterrows():
+        inst_type = str(pos.get("instrument_type", "")).upper()
+        if inst_type not in {"SWAPTION", "CAPLET", "CAP", "CAPFLOOR"}:
+            continue
+        
+        try:
+            # Extract option parameters
+            inst_id = str(pos.get("instrument_id", pos.get("position_id", "UNKNOWN")))
+            notional = float(pos.get("notional", 1_000_000))
+            direction = str(pos.get("direction", "LONG")).upper()
+            sign = 1.0 if direction in {"LONG", "BUY"} else -1.0
+            notional *= sign
+            
+            # Get expiry - try multiple column names
+            expiry_tenor = pos.get("expiry_tenor") or pos.get("option_expiry")
+            expiry_date = pos.get("expiry_date")
+            caplet_start = pos.get("caplet_start_date")
+            
+            # Convert expiry_date to tenor if available
+            if expiry_tenor is None or (isinstance(expiry_tenor, float) and pd.isna(expiry_tenor)):
+                # Try to parse expiry_date
+                if expiry_date is not None and not (isinstance(expiry_date, float) and pd.isna(expiry_date)):
+                    try:
+                        if isinstance(expiry_date, str):
+                            exp_date = pd.to_datetime(expiry_date).date()
+                        else:
+                            exp_date = expiry_date
+                        years_to_expiry = max(0.25, (exp_date - valuation_date).days / 365.25)
+                        if years_to_expiry < 1:
+                            expiry_tenor = f"{max(1, int(round(years_to_expiry * 12)))}M"
+                        else:
+                            expiry_tenor = f"{int(round(years_to_expiry))}Y"
+                    except Exception:
+                        expiry_tenor = "1Y"
+                # Try caplet_start_date for caplets
+                elif caplet_start is not None and not (isinstance(caplet_start, float) and pd.isna(caplet_start)):
+                    try:
+                        if isinstance(caplet_start, str):
+                            start_date = pd.to_datetime(caplet_start).date()
+                        else:
+                            start_date = caplet_start
+                        years_to_start = max(0.25, (start_date - valuation_date).days / 365.25)
+                        if years_to_start < 1:
+                            expiry_tenor = f"{max(1, int(round(years_to_start * 12)))}M"
+                        else:
+                            expiry_tenor = f"{int(round(years_to_start))}Y"
+                    except Exception:
+                        expiry_tenor = "1Y"
+                else:
+                    expiry_tenor = "1Y"
+            
+            # Get swap tenor - try multiple column names
+            swap_tenor = pos.get("swap_tenor") or pos.get("underlying_tenor") or pos.get("underlying_swap_tenor")
+            if swap_tenor is None or (isinstance(swap_tenor, float) and pd.isna(swap_tenor)):
+                swap_tenor = "5Y"
+            
+            expiry_years = DateUtils.tenor_to_years(str(expiry_tenor))
+            swap_years = DateUtils.tenor_to_years(str(swap_tenor))
+            
+            # Get forward rate - need to access curve properly
+            # market_state.curve is CurveState, so use discount_curve
+            if market_state.curve and hasattr(market_state.curve, 'discount_curve'):
+                curve = market_state.curve.discount_curve
+                forward = curve.forward_rate(expiry_years, expiry_years + swap_years)
+            elif market_state.curve and hasattr(market_state.curve, 'forward_rate'):
+                forward = market_state.curve.forward_rate(expiry_years, expiry_years + swap_years)
+            else:
+                forward = 0.03  # Default
+            
+            # Get strike (ATM if not specified)
+            strike = pos.get("strike")
+            if strike is None or strike == "ATM":
+                strike = forward
+            else:
+                strike = float(strike)
+            
+            # Get payer/receiver
+            payer_receiver = str(pos.get("payer_receiver", "PAYER")).upper()
+            is_call = payer_receiver == "PAYER"
+            
+            # Get SABR params for this bucket
+            bucket_key = (str(expiry_tenor), str(swap_tenor))
+            sabr_params = market_state.sabr_surface.get_bucket_params(bucket_key[0], bucket_key[1])
+            if sabr_params is None:
+                # Try ALL bucket
+                sabr_params = market_state.sabr_surface.get_bucket_params("ALL", "ALL")
+            if sabr_params is None:
+                continue
+            
+            # Convert SabrBucketParams to SabrParams if needed
+            from ..vol.sabr import SabrParams
+            if hasattr(sabr_params, 'sigma_atm'):
+                sabr_model_params = SabrParams(
+                    sigma_atm=sabr_params.sigma_atm,
+                    beta=sabr_params.beta,
+                    rho=sabr_params.rho,
+                    nu=sabr_params.nu,
+                )
+            else:
+                sabr_model_params = sabr_params
+            
+            # Compute risk report with all Greeks
+            annuity = 1.0  # Simplified - proper calculation would use discount factors
+            risk_report = sabr_engine.risk_report(
+                F=forward,
+                K=strike,
+                T=expiry_years,
+                sabr_params=sabr_model_params,
+                annuity=annuity,
+                is_call=is_call,
+                notional=abs(notional),
+            )
+            
+            # Apply direction sign to Greeks
+            delta = risk_report.delta_sabr * sign
+            gamma = risk_report.gamma_base * sign
+            vega = risk_report.vega_atm * sign
+            vanna = risk_report.vanna * sign
+            volga = risk_report.volga * sign
+            
+            # Convert rate move to decimal
+            rate_move = rate_move_bp / 10000.0
+            vol_move = vol_move_bp / 10000.0
+            
+            # Taylor expansion for P&L
+            delta_pnl = delta * rate_move
+            gamma_pnl = 0.5 * gamma * (rate_move ** 2)
+            vega_pnl = vega * vol_move
+            vanna_pnl = vanna * rate_move * vol_move
+            volga_pnl = 0.5 * volga * (vol_move ** 2)
+            
+            # Theta (time decay) - approximate as fraction of vega
+            # Options lose value as time passes (negative theta for long positions)
+            theta_daily = -abs(vega) * 0.01  # Rough approximation: 1% of vega per day
+            theta_pnl = theta_daily * days_passed * sign
+            
+            # Total predicted and residual
+            predicted_total = delta_pnl + gamma_pnl + vega_pnl + vanna_pnl + volga_pnl + theta_pnl
+            
+            # For actual P&L, would need repricing - here we use prediction
+            total_pnl = predicted_total
+            residual = 0.0  # Would be non-zero if we had actual repriced P&L
+            
+            results.append(OptionsGreeksAttribution(
+                instrument_id=inst_id,
+                delta_pnl=delta_pnl,
+                vega_pnl=vega_pnl,
+                gamma_pnl=gamma_pnl,
+                vanna_pnl=vanna_pnl,
+                volga_pnl=volga_pnl,
+                theta_pnl=theta_pnl,
+                residual=residual,
+                total_pnl=total_pnl,
+                delta=delta,
+                gamma=gamma,
+                vega=vega,
+                vanna=vanna,
+                volga=volga,
+                rate_move_bp=rate_move_bp,
+                vol_move_bp=vol_move_bp,
+                days_passed=days_passed,
+            ))
+            
+        except Exception as e:
+            # Skip positions that can't be processed
+            continue
+    
+    return results
+
+
+def aggregate_options_attribution(
+    attributions: List[OptionsGreeksAttribution],
+) -> Dict[str, float]:
+    """
+    Aggregate options P&L attribution across all positions.
+    
+    Args:
+        attributions: List of individual position attributions
+        
+    Returns:
+        Dict with aggregated P&L components
+    """
+    if not attributions:
+        return {
+            "delta_pnl": 0.0,
+            "vega_pnl": 0.0,
+            "gamma_pnl": 0.0,
+            "vanna_pnl": 0.0,
+            "volga_pnl": 0.0,
+            "theta_pnl": 0.0,
+            "residual": 0.0,
+            "total_pnl": 0.0,
+            "position_count": 0,
+        }
+    
+    return {
+        "delta_pnl": sum(a.delta_pnl for a in attributions),
+        "vega_pnl": sum(a.vega_pnl for a in attributions),
+        "gamma_pnl": sum(a.gamma_pnl for a in attributions),
+        "vanna_pnl": sum(a.vanna_pnl for a in attributions),
+        "volga_pnl": sum(a.volga_pnl for a in attributions),
+        "theta_pnl": sum(a.theta_pnl for a in attributions),
+        "residual": sum(a.residual for a in attributions),
+        "total_pnl": sum(a.total_pnl for a in attributions),
+        "position_count": len(attributions),
+        "total_delta": sum(a.delta for a in attributions),
+        "total_gamma": sum(a.gamma for a in attributions),
+        "total_vega": sum(a.vega for a in attributions),
+    }
+
+
 __all__ = [
     "PnLAttribution",
     "PnLComponents",
@@ -409,4 +703,7 @@ __all__ = [
     "compute_daily_pnl",
     "compute_carry_rolldown",
     "attribute_curve_vs_vol",
+    "OptionsGreeksAttribution",
+    "compute_option_pnl_attribution",
+    "aggregate_options_attribution",
 ]

@@ -73,10 +73,17 @@ class SabrSurfaceState:
         If no exact bucket exists and allow_fallback=True, uses the nearest
         bucket in (expiry, tenor) space. This keeps pricing/risk stable while
         still surfacing missing bucket information to the caller.
+        
+        Special handling for ("ALL", "ALL") bucket which acts as a wildcard.
         """
         key = make_bucket_key(expiry, tenor)
         if key in self.params_by_bucket:
             return self.params_by_bucket[key]
+        
+        # Check for ("ALL", "ALL") wildcard bucket
+        all_key = ("ALL", "ALL")
+        if all_key in self.params_by_bucket:
+            return self.params_by_bucket[all_key]
 
         if not allow_fallback or not self.params_by_bucket:
             return None
@@ -92,6 +99,9 @@ class SabrSurfaceState:
         best_dist = float("inf")
 
         for candidate in self.params_by_bucket.keys():
+            # Skip wildcard buckets like ("ALL", "ALL") in distance calculation
+            if "ALL" in candidate:
+                continue
             cand_expiry = DateUtils.tenor_to_years(candidate[0])
             cand_tenor = DateUtils.tenor_to_years(candidate[1])
             dist = np.sqrt((cand_expiry - target_expiry) ** 2 + (cand_tenor - target_tenor) ** 2)
