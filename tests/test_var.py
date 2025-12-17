@@ -202,3 +202,74 @@ class TestScenarioEngine:
         
         assert result.scenario.name == "Custom Test"
         assert result.pnl != 0
+
+
+class TestScenarioFuturesSupport:
+    """Tests for FUT position handling in scenarios."""
+    
+    def test_fut_positions_included_in_scenarios(self):
+        """Test that FUT positions are properly built from positions DataFrame."""
+        from rateslib.var.scenarios import _build_trade_from_position_legacy
+        from datetime import date
+        
+        valuation_date = date(2024, 1, 15)
+        
+        # Create a FUT position
+        fut_pos = pd.Series({
+            "position_id": "FUT001",
+            "instrument_type": "FUT",
+            "direction": "LONG",
+            "notional": 10,  # 10 contracts
+            "expiry_date": date(2024, 6, 15),
+            "contract_code": "EDM24",
+            "trade_price": 95.50,
+        })
+        
+        trade = _build_trade_from_position_legacy(fut_pos, valuation_date)
+        
+        # Should NOT return None
+        assert trade is not None
+        assert trade["instrument_type"] == "FUT"
+        assert trade["num_contracts"] == 10
+        assert trade["trade_price"] == 95.50
+        assert trade["expiry"] == date(2024, 6, 15)
+    
+    def test_expired_fut_returns_none(self):
+        """Test that expired FUT positions return None."""
+        from rateslib.var.scenarios import _build_trade_from_position_legacy
+        from datetime import date
+        
+        valuation_date = date(2024, 6, 20)  # After expiry
+        
+        fut_pos = pd.Series({
+            "position_id": "FUT001",
+            "instrument_type": "FUT",
+            "direction": "LONG",
+            "notional": 10,
+            "expiry_date": date(2024, 6, 15),  # Before valuation_date
+        })
+        
+        trade = _build_trade_from_position_legacy(fut_pos, valuation_date)
+        
+        # Expired contracts should return None
+        assert trade is None
+    
+    def test_short_fut_has_negative_contracts(self):
+        """Test that SHORT FUT positions have negative contract count."""
+        from rateslib.var.scenarios import _build_trade_from_position_legacy
+        from datetime import date
+        
+        valuation_date = date(2024, 1, 15)
+        
+        fut_pos = pd.Series({
+            "position_id": "FUT001",
+            "instrument_type": "FUT",
+            "direction": "SHORT",
+            "notional": 5,
+            "expiry_date": date(2024, 6, 15),
+        })
+        
+        trade = _build_trade_from_position_legacy(fut_pos, valuation_date)
+        
+        assert trade is not None
+        assert trade["num_contracts"] == -5  # Negative for short

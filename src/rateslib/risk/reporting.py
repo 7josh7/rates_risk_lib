@@ -41,10 +41,19 @@ EXTENDED_KEYRATE_TENORS = ["3M", "6M", "1Y", "2Y", "3Y", "5Y", "7Y", "10Y", "15Y
 
 
 def _parse_date(val) -> Optional[date]:
+    """Parse a value to date, returning None if unparseable or NaT."""
     try:
+        if val is None:
+            return None
         if isinstance(val, date):
             return val
-        return pd.to_datetime(val).date()
+        # Check for pandas NaT or NaN
+        if pd.isna(val):
+            return None
+        result = pd.to_datetime(val)
+        if pd.isna(result):
+            return None
+        return result.date()
     except Exception:
         return None
 
@@ -519,11 +528,23 @@ def compute_limit_metrics(
             # Attempt to build a minimal swaption trade using maturity tenor if available
             maturity = _parse_date(pos.get("maturity_date"))
             expiry_tenor = pos.get("expiry_tenor") or pos.get("option_expiry")
-            swap_tenor = pos.get("swap_tenor") or pos.get("tenor")
-            if not expiry_tenor and maturity:
+            swap_tenor = pos.get("swap_tenor") or pos.get("tenor") or pos.get("underlying_swap_tenor")
+            
+            # Check for explicit expiry_date first
+            expiry_date = _parse_date(pos.get("expiry_date"))
+            if expiry_date is not None and not expiry_tenor:
+                years = max(0.25, (expiry_date - valuation_date).days / 365.25)
+                if years < 1:
+                    expiry_tenor = f"{max(1, int(round(years * 12)))}M"
+                else:
+                    expiry_tenor = f"{int(round(years))}Y"
+            elif not expiry_tenor and maturity is not None:
                 # derive tenor in years and round to nearest year label
                 years = max(0.25, round((maturity - valuation_date).days / 365.25))
                 expiry_tenor = f"{int(years)}Y"
+            
+            if not expiry_tenor:
+                expiry_tenor = "1Y"  # Default fallback
             if not swap_tenor:
                 swap_tenor = "5Y"
             trade = {
@@ -531,7 +552,7 @@ def compute_limit_metrics(
                 "expiry_tenor": str(expiry_tenor),
                 "swap_tenor": str(swap_tenor),
                 "strike": pos.get("strike", "ATM") or "ATM",
-                "payer_receiver": "PAYER",
+                "payer_receiver": str(pos.get("payer_receiver", "PAYER")).upper(),
                 "notional": notional * sign,
                 "vol_type": "NORMAL",
             }

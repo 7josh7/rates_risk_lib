@@ -706,7 +706,7 @@ def main():
     if vol_warnings:
         for warning in vol_warnings:
             st.sidebar.warning(warning)
-        st.sidebar.success("✓ Delta quotes explicitly rejected with warning (checklist item 3.1)")
+        #st.sidebar.success("✓ Delta quotes explicitly rejected with warning (checklist item 3.1)")
     
     market_state, normalized_vol_quotes = build_market_state(
         ois_curve, ois_curve, valuation_date, vol_quotes_df
@@ -762,7 +762,7 @@ def main():
             st.write(f"λ₁: {nss_model.params.lambda1:.6f}")
             st.write(f"λ₂: {nss_model.params.lambda2:.6f}")
             
-        st.success("✓ NSS parameters shown and accessible (checklist item 10.2)")
+        #st.success("✓ NSS parameters shown and accessible (checklist item 10.2)")
         
         st.plotly_chart(plot_curve_comparison(ois_curve, treasury_curve, valuation_date), width="stretch")
         
@@ -808,8 +808,130 @@ def main():
             - β = 0.5 (fixed beta policy for USD rates)
             """)
             
-            st.success("✓ SABR parameters per bucket shown (checklist item 10.2)")
-            st.success("✓ Parameter bounds enforced and visible (checklist item 3.2)")
+            #st.success("✓ SABR parameters per bucket shown (checklist item 10.2)")
+            #st.success("✓ Parameter bounds enforced and visible (checklist item 3.2)")
+            
+            # =================================================================
+            # SABR Implied Volatility Curves by Bucket
+            # =================================================================
+            st.markdown("---")
+            st.subheader("📉 SABR Implied Volatility Curves by Bucket")
+            st.markdown("""
+            Visualize the fitted implied volatility smile for each calibrated bucket.
+            The smile shows how implied volatility varies with strike around ATM.
+            """)
+            
+            from rateslib.vol.sabr import SabrModel, SabrParams
+            sabr_model = SabrModel()
+            
+            # Get all buckets
+            bucket_keys = list(market_state.sabr_surface.params_by_bucket.keys())
+            
+            # Create bucket selection
+            col1, col2 = st.columns([1, 3])
+            with col1:
+                show_all_buckets = st.checkbox("Show All Buckets", value=True, key="show_all_sabr")
+                if not show_all_buckets:
+                    bucket_options = [f"{b[0]} × {b[1]}" for b in bucket_keys]
+                    selected_bucket_viz = st.selectbox(
+                        "Select Bucket", bucket_options, key="curves_sabr_bucket"
+                    )
+                    # Parse selected
+                    parts = selected_bucket_viz.split(" × ")
+                    buckets_to_plot = [(parts[0], parts[1])]
+                else:
+                    buckets_to_plot = bucket_keys
+            
+            with col2:
+                # Generate implied vol curves
+                F = 0.04  # Assume 4% forward for visualization
+                T = 1.0   # 1Y expiry
+                strikes = np.linspace(F - 0.025, F + 0.025, 31)
+                
+                vol_fig = go.Figure()
+                colors = px.colors.qualitative.Set2
+                
+                for i, bucket in enumerate(buckets_to_plot):
+                    params = market_state.sabr_surface.params_by_bucket.get(bucket)
+                    if params is None:
+                        continue
+                    
+                    vols = []
+                    for K in strikes:
+                        try:
+                            sabr_params = SabrParams(
+                                sigma_atm=params.sigma_atm,
+                                beta=params.beta,
+                                rho=params.rho,
+                                nu=params.nu,
+                                shift=params.shift
+                            )
+                            vol = sabr_model.implied_vol_normal(F, K, T, sabr_params)
+                            vols.append(vol * 10000)  # Convert to bp
+                        except:
+                            vols.append(np.nan)
+                    
+                    bucket_label = f"{bucket[0]} × {bucket[1]}"
+                    vol_fig.add_trace(go.Scatter(
+                        x=strikes * 100,
+                        y=vols,
+                        mode='lines',
+                        name=bucket_label,
+                        line=dict(color=colors[i % len(colors)], width=2),
+                        hovertemplate=f"<b>{bucket_label}</b><br>Strike: %{{x:.2f}}%<br>Vol: %{{y:.1f}} bp<extra></extra>"
+                    ))
+                
+                # Add ATM marker
+                vol_fig.add_vline(x=F*100, line_dash="dot", line_color="gray", 
+                                  annotation_text="ATM", annotation_position="top right")
+                
+                vol_fig.update_layout(
+                    title="SABR Implied Volatility Smile by Bucket",
+                    xaxis_title="Strike (%)",
+                    yaxis_title="Implied Volatility (bp)",
+                    legend=dict(x=1.02, y=1, xanchor='left'),
+                    height=450,
+                    margin=dict(r=150)
+                )
+                st.plotly_chart(vol_fig, width="stretch")
+            
+            # Surface heatmap (if multiple buckets)
+            if len(bucket_keys) > 1:
+                st.markdown("**Volatility Surface Heatmap (ATM σ)**")
+                
+                # Extract expiries and tenors
+                expiries = sorted(set(b[0] for b in bucket_keys))
+                tenors = sorted(set(b[1] for b in bucket_keys))
+                
+                # Build matrix
+                z_matrix = []
+                for exp in expiries:
+                    row = []
+                    for ten in tenors:
+                        params = market_state.sabr_surface.params_by_bucket.get((exp, ten))
+                        if params:
+                            row.append(params.sigma_atm * 10000)  # bp
+                        else:
+                            row.append(np.nan)
+                    z_matrix.append(row)
+                
+                heatmap_fig = go.Figure(data=go.Heatmap(
+                    z=z_matrix,
+                    x=tenors,
+                    y=expiries,
+                    colorscale='Viridis',
+                    colorbar=dict(title="σ_ATM (bp)"),
+                    hovertemplate="Expiry: %{y}<br>Tenor: %{x}<br>σ_ATM: %{z:.1f} bp<extra></extra>"
+                ))
+                heatmap_fig.update_layout(
+                    title="ATM Volatility Surface (σ_ATM)",
+                    xaxis_title="Swap Tenor",
+                    yaxis_title="Option Expiry",
+                    height=350
+                )
+                st.plotly_chart(heatmap_fig, width="stretch")
+            
+            #st.success("✓ SABR implied vol curves visualized by bucket")
     
     # =========================================================================
     # TAB 2: Pricing
@@ -1222,7 +1344,7 @@ def main():
             )
         else:
             st.success(
-                f"✓ VaR includes all {var_coverage.included_instruments} instruments "
+                #f"✓ VaR includes all {var_coverage.included_instruments} instruments "
                 f"(Coverage: {var_coverage.coverage_ratio:.1%})"
             )
 
@@ -1373,7 +1495,7 @@ def main():
                     width="stretch"
                 )
                 
-                st.success("✓ ES increases materially when ν is stressed (checklist item 7.2)")
+                #st.success("✓ ES increases materially when ν is stressed (checklist item 7.2)")
             
             with col2:
                 st.write("**Rho (ρ) Stress Test - Skew Asymmetry**")
@@ -1403,7 +1525,7 @@ def main():
                     width="stretch"
                 )
                 
-                st.success("✓ Skewed books respond asymmetrically to ρ shocks (checklist item 7.2)")
+                #st.success("✓ Skewed books respond asymmetrically to ρ shocks (checklist item 7.2)")
             
             # Option-heavy vs linear portfolio ES comparison
             st.write("**Option-Heavy Portfolio ES Sensitivity**")
@@ -1425,7 +1547,7 @@ def main():
                 width="stretch"
             )
             
-            st.success("✓ Option-heavy portfolios show higher ES sensitivity (checklist item 7.1)")
+            #st.success("✓ Option-heavy portfolios show higher ES sensitivity (checklist item 7.1)")
             
             # Flat vol vs SABR comparison
             st.write("**Flat Vol vs SABR Tail Risk**")
@@ -1437,7 +1559,7 @@ def main():
             col2.metric("SABR ES", f"${sabr_es:,.0f}")
             col3.metric("Underestimation", f"{(1 - flat_vol_es/sabr_es)*100:.1f}%")
             
-            st.warning("⚠️ Flat-vol models underestimate tail risk by ~23% vs SABR (checklist item 7.2)")
+            #st.warning("⚠️ Flat-vol models underestimate tail risk by ~23% vs SABR (checklist item 7.2)")
     
     # =========================================================================
     # TAB 5: Scenarios
@@ -1476,7 +1598,7 @@ def main():
         with st.expander("View Full Scenario Definitions", expanded=False):
             st.dataframe(defs_df, width="stretch")
         
-        st.success("✓ Scenario definitions are explicit and visible (checklist item 10.2)")
+        #st.success("✓ Scenario definitions are explicit and visible (checklist item 10.2)")
         
         # Run scenarios using real bump-and-reprice engine
         st.subheader("Curve-Only Scenarios")
@@ -1565,7 +1687,7 @@ def main():
                 width="stretch"
             )
             
-            st.success("✓ Vol-only shocks affect options only (checklist item 6.1)")
+            #st.success("✓ Vol-only shocks affect options only (checklist item 6.1)")
         
         # Combined scenarios verification
         st.subheader("Combined Shock Verification")
@@ -1595,7 +1717,7 @@ def main():
                 width="stretch"
             )
             
-            st.success("✓ Combined shocks equal full repricing (checklist item 6.1)")
+            #st.success("✓ Combined shocks equal full repricing (checklist item 6.1)")
         
         # Scenario limits - compute ALL metrics (same as Risk Metrics tab)
         st.subheader("Scenario Limits")
@@ -1651,26 +1773,474 @@ def main():
         if not curve_scenarios_df.empty and 'P&L' in curve_scenarios_df.columns:
             st.plotly_chart(plot_scenario_waterfall(curve_scenarios_df), width="stretch")
         
-        # Custom scenario builder with configurable severity
+        # =================================================================
+        # Enhanced Custom Scenario Builder with NSS + SABR Parameter Tweaking
+        # =================================================================
         st.subheader("Custom Scenario Builder")
-        st.markdown("Build custom scenarios with configurable stress severity")
+        st.markdown("""
+        Build custom scenarios by directly modifying curve and volatility parameters.
+        Visualize how parameter changes affect the yield curve and implied volatility surface.
+        """)
         
-        col1, col2, col3 = st.columns(3)
-        with col1:
-            parallel_shift = st.slider("Parallel Shift (bp)", -200, 200, 0)
-            severity_mult = st.selectbox("Severity", ["Low (0.5x)", "Medium (1x)", "High (2x)", "Extreme (3x)"])
-        with col2:
-            twist_magnitude = st.slider("Twist Magnitude (bp)", -100, 100, 0)
-            vol_shock_pct = st.slider("Vol Shock (%)", -50, 100, 0)
-        with col3:
-            st.write("")  # Spacing
+        # Create tabs for different scenario types
+        scenario_tab1, scenario_tab2, scenario_tab3 = st.tabs([
+            "📈 Curve Shifts", "🔧 NSS Parameters", "📊 SABR Parameters"
+        ])
         
-        st.success("✓ Stress severity is configurable (checklist item 6.2)")
+        with scenario_tab1:
+            st.markdown("**Standard Curve Shifts**")
+            col1, col2, col3 = st.columns(3)
+            with col1:
+                parallel_shift = st.slider("Parallel Shift (bp)", -200, 200, 0, key="custom_parallel")
+                severity_mult = st.selectbox("Severity", ["Low (0.5x)", "Medium (1x)", "High (2x)", "Extreme (3x)"], key="custom_severity")
+            with col2:
+                twist_magnitude = st.slider("Twist Magnitude (bp)", -100, 100, 0, key="custom_twist")
+                pivot_tenor = st.selectbox("Twist Pivot", ["5Y", "3Y", "7Y", "10Y"], key="twist_pivot")
+            with col3:
+                steepen_flatten = st.slider("2s10s Steepening (bp)", -75, 75, 0, key="custom_steepen")
         
-        if st.button("Run Custom Scenario"):
-            # Calculate impact (simplified)
-            custom_pnl = -total_dv01 * parallel_shift
-            st.metric("Estimated P&L", f"${custom_pnl:,.2f}")
+        with scenario_tab2:
+            st.markdown("**NSS Yield Curve Parameters**")
+            st.markdown("""
+            Adjust the Nelson-Siegel-Svensson parameters to see how they affect the yield curve shape:
+            - **β₀ (Level)**: Long-term asymptotic rate
+            - **β₁ (Slope)**: Short-term component; negative = upward sloping
+            - **β₂ (Curvature 1)**: First hump/trough
+            - **β₃ (Curvature 2)**: Second hump (Svensson extension)
+            - **λ₁, λ₂ (Decay)**: Control where humps appear
+            """)
+            
+            # Get base NSS params
+            base_beta0 = nss_model.params.beta0 if nss_model.params else 0.04
+            base_beta1 = nss_model.params.beta1 if nss_model.params else -0.02
+            base_beta2 = nss_model.params.beta2 if nss_model.params else 0.01
+            base_beta3 = nss_model.params.beta3 if nss_model.params else 0.01
+            base_lambda1 = nss_model.params.lambda1 if nss_model.params else 1.5
+            base_lambda2 = nss_model.params.lambda2 if nss_model.params else 3.0
+            
+            col1, col2 = st.columns(2)
+            with col1:
+                nss_beta0 = st.slider("β₀ (Level)", 0.00, 0.10, float(base_beta0), 0.005, format="%.4f", key="nss_b0")
+                nss_beta1 = st.slider("β₁ (Slope)", -0.10, 0.10, float(base_beta1), 0.005, format="%.4f", key="nss_b1")
+                nss_beta2 = st.slider("β₂ (Curvature 1)", -0.10, 0.10, float(base_beta2), 0.005, format="%.4f", key="nss_b2")
+            with col2:
+                nss_beta3 = st.slider("β₃ (Curvature 2)", -0.10, 0.10, float(base_beta3), 0.005, format="%.4f", key="nss_b3")
+                nss_lambda1 = st.slider("λ₁ (Decay 1)", 0.1, 5.0, float(base_lambda1), 0.1, key="nss_l1")
+                nss_lambda2 = st.slider("λ₂ (Decay 2)", 0.5, 10.0, float(base_lambda2), 0.1, key="nss_l2")
+            
+            # Reset button
+            if st.button("Reset to Fitted Values", key="reset_nss"):
+                st.rerun()
+            
+            # Visualize NSS curve with modified parameters
+            st.markdown("**Yield Curve Comparison**")
+            
+            # Compute stressed curve
+            from rateslib.curves.nss import NSSParameters
+            stressed_params = NSSParameters(
+                beta0=nss_beta0, beta1=nss_beta1, beta2=nss_beta2,
+                beta3=nss_beta3, lambda1=nss_lambda1, lambda2=nss_lambda2
+            )
+            
+            # Generate curve points
+            tenors_years = [0.25, 0.5, 1, 2, 3, 5, 7, 10, 15, 20, 30]
+            base_yields = []
+            stressed_yields = []
+            for t in tenors_years:
+                base_yields.append(nss_model._nss_yield(t, nss_model.params) * 100)
+                stressed_yields.append(nss_model._nss_yield(t, stressed_params) * 100)
+            
+            # Plot comparison
+            nss_fig = go.Figure()
+            nss_fig.add_trace(go.Scatter(
+                x=tenors_years, y=base_yields,
+                mode='lines+markers', name='Base Curve',
+                line=dict(color='blue', width=2)
+            ))
+            nss_fig.add_trace(go.Scatter(
+                x=tenors_years, y=stressed_yields,
+                mode='lines+markers', name='Stressed Curve',
+                line=dict(color='red', width=2, dash='dash')
+            ))
+            nss_fig.update_layout(
+                title="NSS Yield Curve: Base vs Stressed",
+                xaxis_title="Tenor (Years)",
+                yaxis_title="Yield (%)",
+                legend=dict(x=0.7, y=0.95),
+                height=400
+            )
+            st.plotly_chart(nss_fig, width="stretch")
+            
+            # Show parameter delta
+            st.markdown("**Parameter Changes**")
+            param_delta_df = pd.DataFrame({
+                "Parameter": ["β₀", "β₁", "β₂", "β₃", "λ₁", "λ₂"],
+                "Base": [base_beta0, base_beta1, base_beta2, base_beta3, base_lambda1, base_lambda2],
+                "Stressed": [nss_beta0, nss_beta1, nss_beta2, nss_beta3, nss_lambda1, nss_lambda2],
+                "Change": [nss_beta0 - base_beta0, nss_beta1 - base_beta1, nss_beta2 - base_beta2, 
+                          nss_beta3 - base_beta3, nss_lambda1 - base_lambda1, nss_lambda2 - base_lambda2]
+            })
+            st.dataframe(param_delta_df.style.format({
+                "Base": "{:.6f}", "Stressed": "{:.6f}", "Change": "{:+.6f}"
+            }), width="stretch")
+        
+        with scenario_tab3:
+            st.markdown("**SABR Volatility Surface Parameters**")
+            
+            if market_state.sabr_surface is None:
+                st.info("SABR surface not calibrated. Load vol_quotes.csv to enable SABR parameter tweaking.")
+            else:
+                st.markdown("""
+                Adjust SABR parameters to stress the volatility surface:
+                - **σ_ATM Scale**: Multiply all ATM vols by this factor
+                - **ν Scale**: Multiply vol-of-vol by this factor (affects smile width)
+                - **ρ Shift**: Add this to correlation (affects skew)
+                """)
+                
+                col1, col2, col3 = st.columns(3)
+                with col1:
+                    sabr_sigma_scale = st.slider("σ_ATM Scale", 0.5, 2.0, 1.0, 0.05, key="sabr_sigma")
+                with col2:
+                    sabr_nu_scale = st.slider("ν Scale", 0.5, 3.0, 1.0, 0.1, key="sabr_nu")
+                with col3:
+                    sabr_rho_shift = st.slider("ρ Shift", -0.5, 0.5, 0.0, 0.05, key="sabr_rho")
+                
+                # Show impact table per bucket
+                st.markdown("**SABR Parameter Impact by Bucket**")
+                sabr_impact_rows = []
+                for bucket, params in market_state.sabr_surface.params_by_bucket.items():
+                    new_sigma = params.sigma_atm * sabr_sigma_scale
+                    new_nu = params.nu * sabr_nu_scale
+                    new_rho = np.clip(params.rho + sabr_rho_shift, -0.999, 0.999)
+                    sabr_impact_rows.append({
+                        "Bucket": f"{bucket[0]} × {bucket[1]}",
+                        "Base σ_ATM": params.sigma_atm,
+                        "Stressed σ_ATM": new_sigma,
+                        "Base ν": params.nu,
+                        "Stressed ν": new_nu,
+                        "Base ρ": params.rho,
+                        "Stressed ρ": new_rho,
+                    })
+                
+                sabr_impact_df = pd.DataFrame(sabr_impact_rows)
+                st.dataframe(sabr_impact_df.style.format({
+                    "Base σ_ATM": "{:.5f}", "Stressed σ_ATM": "{:.5f}",
+                    "Base ν": "{:.4f}", "Stressed ν": "{:.4f}",
+                    "Base ρ": "{:.3f}", "Stressed ρ": "{:.3f}",
+                }), width="stretch")
+                
+                # Implied vol curve visualization
+                st.markdown("**Implied Volatility Smile Preview**")
+                
+                # Select a bucket to visualize
+                bucket_options = [f"{b[0]} × {b[1]}" for b in market_state.sabr_surface.params_by_bucket.keys()]
+                selected_bucket_str = st.selectbox("Select Bucket to Visualize", bucket_options, key="sabr_viz_bucket")
+                
+                # Parse bucket key
+                parts = selected_bucket_str.split(" × ")
+                selected_bucket = (parts[0], parts[1])
+                bucket_params = market_state.sabr_surface.params_by_bucket.get(selected_bucket)
+                
+                if bucket_params:
+                    # Generate implied vol smile
+                    from rateslib.vol.sabr import SabrModel, SabrParams
+                    sabr_model = SabrModel()
+                    
+                    # Assume forward ~4% for visualization
+                    F = 0.04
+                    T = 1.0  # 1Y expiry for visualization
+                    strikes = np.linspace(F - 0.02, F + 0.02, 21)
+                    
+                    base_vols = []
+                    stressed_vols = []
+                    for K in strikes:
+                        try:
+                            base_params = SabrParams(
+                                sigma_atm=bucket_params.sigma_atm,
+                                beta=bucket_params.beta,
+                                rho=bucket_params.rho,
+                                nu=bucket_params.nu,
+                                shift=bucket_params.shift
+                            )
+                            stressed_params = SabrParams(
+                                sigma_atm=bucket_params.sigma_atm * sabr_sigma_scale,
+                                beta=bucket_params.beta,
+                                rho=np.clip(bucket_params.rho + sabr_rho_shift, -0.999, 0.999),
+                                nu=bucket_params.nu * sabr_nu_scale,
+                                shift=bucket_params.shift
+                            )
+                            base_vol = sabr_model.implied_vol_normal(F, K, T, base_params)
+                            stressed_vol = sabr_model.implied_vol_normal(F, K, T, stressed_params)
+                            base_vols.append(base_vol * 10000)  # bp
+                            stressed_vols.append(stressed_vol * 10000)  # bp
+                        except:
+                            base_vols.append(np.nan)
+                            stressed_vols.append(np.nan)
+                    
+                    smile_fig = go.Figure()
+                    smile_fig.add_trace(go.Scatter(
+                        x=strikes * 100, y=base_vols,
+                        mode='lines', name='Base Smile',
+                        line=dict(color='blue', width=2)
+                    ))
+                    smile_fig.add_trace(go.Scatter(
+                        x=strikes * 100, y=stressed_vols,
+                        mode='lines', name='Stressed Smile',
+                        line=dict(color='red', width=2, dash='dash')
+                    ))
+                    smile_fig.add_vline(x=F*100, line_dash="dot", line_color="gray", annotation_text="ATM")
+                    smile_fig.update_layout(
+                        title=f"SABR Implied Vol Smile: {selected_bucket_str}",
+                        xaxis_title="Strike (%)",
+                        yaxis_title="Implied Vol (bp)",
+                        legend=dict(x=0.7, y=0.95),
+                        height=400
+                    )
+                    st.plotly_chart(smile_fig, width="stretch")
+        
+        #st.success("✓ Stress severity is configurable (checklist item 6.2)")
+        #st.success("✓ NSS and SABR parameters directly editable with curve visualization")
+        
+        # Run Custom Scenario button with Reset
+        st.markdown("---")
+        st.subheader("🚀 Execute Custom Scenario")
+        
+        # Summary of all changes
+        st.markdown("**Scenario Summary:**")
+        changes_summary = []
+        
+        # Curve shifts summary
+        if parallel_shift != 0:
+            changes_summary.append(f"• Parallel shift: {parallel_shift:+d} bp")
+        if twist_magnitude != 0:
+            changes_summary.append(f"• Twist ({pivot_tenor} pivot): {twist_magnitude:+d} bp")
+        if steepen_flatten != 0:
+            changes_summary.append(f"• 2s10s steepening: {steepen_flatten:+d} bp")
+        
+        # NSS changes summary
+        nss_changed = (nss_beta0 != base_beta0 or nss_beta1 != base_beta1 or 
+                       nss_beta2 != base_beta2 or nss_beta3 != base_beta3 or
+                       nss_lambda1 != base_lambda1 or nss_lambda2 != base_lambda2)
+        if nss_changed:
+            changes_summary.append(f"• NSS parameters modified (see NSS Parameters tab)")
+        
+        # SABR changes summary
+        sabr_changed = False
+        if market_state.sabr_surface is not None:
+            sabr_sigma_scale_val = st.session_state.get("sabr_sigma", 1.0)
+            sabr_nu_scale_val = st.session_state.get("sabr_nu", 1.0)
+            sabr_rho_shift_val = st.session_state.get("sabr_rho", 0.0)
+            sabr_changed = (sabr_sigma_scale_val != 1.0 or sabr_nu_scale_val != 1.0 or sabr_rho_shift_val != 0.0)
+            if sabr_changed:
+                changes_summary.append(f"• SABR: σ_ATM×{sabr_sigma_scale_val:.2f}, ν×{sabr_nu_scale_val:.2f}, ρ{sabr_rho_shift_val:+.2f}")
+        
+        if changes_summary:
+            for change in changes_summary:
+                st.markdown(change)
+        else:
+            st.info("No changes configured. Adjust parameters in the tabs above.")
+        
+        # Buttons side by side
+        col_btn1, col_btn2, col_btn3 = st.columns([2, 2, 6])
+        with col_btn1:
+            run_scenario = st.button("▶️ Run Custom Scenario", key="run_custom_btn", type="primary")
+        with col_btn2:
+            reset_scenario = st.button("🔄 Reset All", key="reset_custom_btn")
+        
+        if reset_scenario:
+            # Clear session state for all scenario sliders
+            for key in ["custom_parallel", "custom_twist", "custom_steepen", "custom_severity",
+                       "nss_b0", "nss_b1", "nss_b2", "nss_b3", "nss_l1", "nss_l2",
+                       "sabr_sigma", "sabr_nu", "sabr_rho"]:
+                if key in st.session_state:
+                    del st.session_state[key]
+            st.rerun()
+        
+        if run_scenario:
+            with st.spinner("Building stressed market state and repricing portfolio..."):
+                try:
+                    # Get severity multiplier
+                    severity_map = {"Low (0.5x)": 0.5, "Medium (1x)": 1.0, "High (2x)": 2.0, "Extreme (3x)": 3.0}
+                    sev = severity_map.get(severity_mult, 1.0)
+                    
+                    # =========================================================
+                    # 1. Build stressed NSS curve
+                    # =========================================================
+                    from rateslib.curves.nss import NSSParameters
+                    
+                    stressed_nss_params = NSSParameters(
+                        beta0=nss_beta0, beta1=nss_beta1, beta2=nss_beta2,
+                        beta3=nss_beta3, lambda1=nss_lambda1, lambda2=nss_lambda2
+                    )
+                    
+                    # Create stressed NSS model
+                    stressed_nss = NelsonSiegelSvensson(valuation_date)
+                    stressed_nss.params = stressed_nss_params
+                    stressed_nss.is_fitted = True
+                    
+                    # Convert to curve
+                    stressed_nss_curve = stressed_nss.to_curve(
+                        tenors=[0.25, 0.5, 1, 2, 3, 5, 7, 10, 15, 20, 30]
+                    )
+                    
+                    # =========================================================
+                    # 2. Apply curve shifts (parallel, twist, steepening)
+                    # =========================================================
+                    # Build bump profile
+                    bump_profile = {}
+                    tenors = ["3M", "6M", "1Y", "2Y", "3Y", "5Y", "7Y", "10Y", "20Y", "30Y"]
+                    tenor_years = [0.25, 0.5, 1, 2, 3, 5, 7, 10, 20, 30]
+                    
+                    # Pivot index for twist
+                    pivot_map = {"3Y": 4, "5Y": 5, "7Y": 6, "10Y": 7}
+                    pivot_idx = pivot_map.get(pivot_tenor, 5)
+                    
+                    for i, tenor in enumerate(tenors):
+                        bump = parallel_shift * sev
+                        
+                        # Add twist component
+                        if twist_magnitude != 0:
+                            # Linear interpolation from pivot
+                            if i < pivot_idx:
+                                twist_bump = -twist_magnitude * (pivot_idx - i) / pivot_idx
+                            else:
+                                twist_bump = twist_magnitude * (i - pivot_idx) / (len(tenors) - 1 - pivot_idx)
+                            bump += twist_bump * sev
+                        
+                        # Add steepening (2s10s)
+                        if steepen_flatten != 0:
+                            # 2Y gets negative, 10Y gets positive
+                            if tenor in ["3M", "6M", "1Y", "2Y"]:
+                                bump -= steepen_flatten * sev / 2
+                            elif tenor in ["10Y", "20Y", "30Y"]:
+                                bump += steepen_flatten * sev / 2
+                        
+                        if bump != 0:
+                            bump_profile[tenor] = bump
+                    
+                    # Apply bumps to the stressed NSS curve
+                    from rateslib.risk.bumping import BumpEngine
+                    if bump_profile:
+                        bump_engine = BumpEngine(stressed_nss_curve)
+                        final_stressed_curve = bump_engine.custom_bump(bump_profile)
+                    else:
+                        final_stressed_curve = stressed_nss_curve
+                    
+                    # =========================================================
+                    # 3. Build stressed SABR surface
+                    # =========================================================
+                    stressed_sabr_surface = None
+                    if market_state.sabr_surface is not None:
+                        sabr_sigma_scale_val = st.session_state.get("sabr_sigma", 1.0)
+                        sabr_nu_scale_val = st.session_state.get("sabr_nu", 1.0)
+                        sabr_rho_shift_val = st.session_state.get("sabr_rho", 0.0)
+                        
+                        from rateslib.vol.sabr_surface import SabrSurfaceState, SabrBucketParams
+                        
+                        stressed_params_by_bucket = {}
+                        for bucket, params in market_state.sabr_surface.params_by_bucket.items():
+                            stressed_params_by_bucket[bucket] = SabrBucketParams(
+                                sigma_atm=params.sigma_atm * sabr_sigma_scale_val,
+                                nu=params.nu * sabr_nu_scale_val,
+                                rho=float(np.clip(params.rho + sabr_rho_shift_val, -0.999, 0.999)),
+                                beta=params.beta,
+                                shift=params.shift,
+                                diagnostics=params.diagnostics,
+                            )
+                        
+                        stressed_sabr_surface = SabrSurfaceState(
+                            params_by_bucket=stressed_params_by_bucket,
+                            convention=market_state.sabr_surface.convention,
+                            asof=market_state.sabr_surface.asof,
+                            missing_bucket_policy=market_state.sabr_surface.missing_bucket_policy,
+                        )
+                    
+                    # =========================================================
+                    # 4. Build stressed MarketState
+                    # =========================================================
+                    stressed_curve_state = CurveState(
+                        discount_curve=final_stressed_curve,
+                        projection_curve=final_stressed_curve,
+                        metadata={"scenario": "custom_stress"},
+                    )
+                    
+                    stressed_market_state = MarketState(
+                        curve=stressed_curve_state,
+                        sabr_surface=stressed_sabr_surface,
+                        asof=str(valuation_date),
+                    )
+                    
+                    # =========================================================
+                    # 5. Price portfolio under base and stressed states
+                    # =========================================================
+                    from rateslib.portfolio.builders import price_portfolio_with_diagnostics
+                    
+                    # Base pricing
+                    base_result = price_portfolio_with_diagnostics(
+                        positions_df, market_state, valuation_date
+                    )
+                    
+                    # Stressed pricing
+                    stressed_result = price_portfolio_with_diagnostics(
+                        positions_df, stressed_market_state, valuation_date
+                    )
+                    
+                    # =========================================================
+                    # 6. Calculate and display P&L
+                    # =========================================================
+                    total_pnl = stressed_result.total_pv - base_result.total_pv
+                    
+                    # Estimate curve vs vol attribution (simplified)
+                    # Price with stressed curve but base vol
+                    curve_only_market = MarketState(
+                        curve=stressed_curve_state,
+                        sabr_surface=market_state.sabr_surface,
+                        asof=str(valuation_date),
+                    )
+                    curve_only_result = price_portfolio_with_diagnostics(
+                        positions_df, curve_only_market, valuation_date
+                    )
+                    curve_pnl = curve_only_result.total_pv - base_result.total_pv
+                    vol_pnl = total_pnl - curve_pnl
+                    
+                    # Display results
+                    st.markdown("---")
+                    st.subheader("📊 Custom Scenario Results")
+                    
+                    col1, col2, col3, col4 = st.columns(4)
+                    col1.metric("Base PV", f"${base_result.total_pv:,.0f}")
+                    col2.metric("Stressed PV", f"${stressed_result.total_pv:,.0f}")
+                    col3.metric("Total P&L", f"${total_pnl:,.0f}", 
+                               delta=f"{total_pnl/abs(base_result.total_pv)*100:.2f}%" if base_result.total_pv != 0 else "N/A")
+                    col4.metric("Coverage", f"{stressed_result.coverage_ratio:.1%}")
+                    
+                    # P&L attribution
+                    st.markdown("**P&L Attribution (Approximate)**")
+                    attr_col1, attr_col2, attr_col3 = st.columns(3)
+                    attr_col1.metric("Curve P&L", f"${curve_pnl:,.0f}")
+                    attr_col2.metric("Vol P&L", f"${vol_pnl:,.0f}")
+                    attr_col3.metric("Residual", f"${total_pnl - curve_pnl - vol_pnl:,.0f}")
+                    
+                    # Show failures if any
+                    if stressed_result.failed_trades:
+                        with st.expander(f"⚠️ {len(stressed_result.failed_trades)} Position(s) Failed", expanded=False):
+                            failure_data = []
+                            for f in stressed_result.failed_trades:
+                                failure_data.append({
+                                    "Position ID": f.position_id or "UNKNOWN",
+                                    "Type": f.instrument_type,
+                                    "Stage": f.stage,
+                                    "Error": f.error_message[:60] + "..." if len(f.error_message) > 60 else f.error_message,
+                                })
+                            st.dataframe(pd.DataFrame(failure_data), width="stretch")
+                    
+                    st.success("✅ Custom scenario executed successfully!")
+                    
+                except Exception as e:
+                    st.error(f"❌ Error running custom scenario: {str(e)}")
+                    import traceback
+                    with st.expander("Error Details"):
+                        st.code(traceback.format_exc())
     
     # =========================================================================
     # TAB 6: P&L Attribution
@@ -1735,7 +2305,7 @@ def main():
             width="stretch"
         )
         
-        st.success("✓ Curve-only P&L computed correctly (checklist item 8.1)")
+        #st.success("✓ Curve-only P&L computed correctly (checklist item 8.1)")
         
         # Options P&L Attribution
         if market_state.sabr_surface is not None:
@@ -1786,7 +2356,7 @@ def main():
                 width="stretch"
             )
             
-            st.success("✓ Vol-only P&L computed correctly (checklist item 8.1)")
+            #st.success("✓ Vol-only P&L computed correctly (checklist item 8.1)")
             
             # Cross-gamma explanation
             st.info("""
@@ -1795,7 +2365,7 @@ def main():
             term accounts for the non-linear interaction between delta and vega sensitivities.
             """)
             
-            st.success("✓ Cross term computed and reported (checklist item 8.1)")
+            #st.success("✓ Cross term computed and reported (checklist item 8.1)")
             
             # Explain quality metrics
             st.subheader("Attribution Quality Metrics")
@@ -1820,8 +2390,8 @@ def main():
             else:
                 st.success(f"✓ Residual ${residual_val} within threshold ${threshold_val}")
             
-            st.success("✓ Residual threshold defined and enforced (checklist item 8.2)")
-            st.success("✓ Large residuals flagged (checklist item 8.2)")
+            #st.success("✓ Residual threshold defined and enforced (checklist item 8.2)")
+            #st.success("✓ Large residuals flagged (checklist item 8.2)")
     
     # =========================================================================
     # TAB 7: Liquidity Risk

@@ -663,14 +663,81 @@ def _build_trade_from_position_legacy(pos: pd.Series, valuation_date: date) -> O
         }
     
     if inst in {"SWAPTION", "CAPLET", "CAP", "CAPFLOOR"}:
-        maturity = pos.get("maturity_date")
-        if maturity is not None:
-            maturity = pd.to_datetime(maturity).date() if not isinstance(maturity, date) else maturity
-        expiry_tenor = pos.get("expiry_tenor") or pos.get("option_expiry")
-        swap_tenor = pos.get("swap_tenor") or pos.get("tenor")
-        if not expiry_tenor and maturity:
+        maturity_raw = pos.get("maturity_date")
+        maturity = None
+        if maturity_raw is not None and not pd.isna(maturity_raw):
+            try:
+                if isinstance(maturity_raw, date):
+                    maturity = maturity_raw
+                else:
+                    parsed = pd.to_datetime(maturity_raw)
+                    if not pd.isna(parsed):
+                        maturity = parsed.date()
+            except Exception:
+                maturity = None
+        
+        # Helper to get first non-null, non-NaN value
+        def get_first_valid(*keys):
+            for key in keys:
+                val = pos.get(key)
+                if val is not None and not pd.isna(val):
+                    return val
+            return None
+        
+        expiry_tenor = get_first_valid("expiry_tenor", "option_expiry")
+        swap_tenor = get_first_valid("swap_tenor", "tenor", "underlying_swap_tenor")
+        
+        # Check for explicit expiry_date first
+        expiry_raw = pos.get("expiry_date")
+        if expiry_raw is not None and not pd.isna(expiry_raw):
+            try:
+                if isinstance(expiry_raw, date):
+                    expiry_date = expiry_raw
+                else:
+                    parsed = pd.to_datetime(expiry_raw)
+                    if not pd.isna(parsed):
+                        expiry_date = parsed.date()
+                        years = max(0.25, (expiry_date - valuation_date).days / 365.25)
+                        if years < 1:
+                            expiry_tenor = f"{max(1, int(round(years * 12)))}M"
+                        else:
+                            expiry_tenor = f"{int(round(years))}Y"
+            except Exception:
+                pass
+        
+        # For CAPLET, derive tenor from caplet dates
+        if inst in {"CAPLET", "CAP", "CAPFLOOR"}:
+            caplet_start = get_first_valid("caplet_start_date")
+            caplet_end = get_first_valid("caplet_end_date")
+            if caplet_start and caplet_end:
+                try:
+                    if not isinstance(caplet_start, date):
+                        caplet_start = pd.to_datetime(caplet_start).date()
+                    if not isinstance(caplet_end, date):
+                        caplet_end = pd.to_datetime(caplet_end).date()
+                    # Use time to caplet start as expiry_tenor
+                    years_to_start = max(0.25, (caplet_start - valuation_date).days / 365.25)
+                    if not expiry_tenor:
+                        if years_to_start < 1:
+                            expiry_tenor = f"{max(1, int(round(years_to_start * 12)))}M"
+                        else:
+                            expiry_tenor = f"{int(round(years_to_start))}Y"
+                    # Use caplet period as swap_tenor
+                    caplet_period_years = (caplet_end - caplet_start).days / 365.25
+                    if not swap_tenor:
+                        if caplet_period_years < 1:
+                            swap_tenor = f"{max(1, int(round(caplet_period_years * 12)))}M"
+                        else:
+                            swap_tenor = f"{int(round(caplet_period_years))}Y"
+                except Exception:
+                    pass
+        
+        if not expiry_tenor and maturity is not None:
             years = max(0.25, round((maturity - valuation_date).days / 365.25))
             expiry_tenor = f"{int(years)}Y"
+        
+        if not expiry_tenor:
+            expiry_tenor = "1Y"  # Default fallback
         if not swap_tenor:
             swap_tenor = "5Y"
         return {
@@ -678,9 +745,52 @@ def _build_trade_from_position_legacy(pos: pd.Series, valuation_date: date) -> O
             "expiry_tenor": str(expiry_tenor),
             "swap_tenor": str(swap_tenor),
             "strike": pos.get("strike", "ATM") or "ATM",
-            "payer_receiver": "PAYER" if direction in {"LONG", "BUY"} else "RECEIVER",
+            "payer_receiver": str(pos.get("payer_receiver", "PAYER")).upper() if pos.get("payer_receiver") else ("PAYER" if direction in {"LONG", "BUY"} else "RECEIVER"),
             "notional": notional * sign,
             "vol_type": "NORMAL",
+        }
+    
+    if inst in {"FUT", "FUTURE", "FUTURES"}:
+        # Get expiry date from multiple possible fields
+        expiry_raw = pos.get("expiry_date") or pos.get("maturity_date")
+        if expiry_raw is None or pd.isna(expiry_raw):
+            return None
+        try:
+            if isinstance(expiry_raw, date):
+                expiry = expiry_raw
+            else:
+                parsed = pd.to_datetime(expiry_raw)
+                if pd.isna(parsed):
+                    return None
+                expiry = parsed.date()
+        except Exception:
+            return None
+        
+        if expiry <= valuation_date:
+            return None  # Expired contract
+        
+        # Handle notional as contract count
+        num_contracts = int(abs(notional)) if notional >= 1 else 1
+        contract_sign = 1 if direction in {"LONG", "BUY", ""} else -1
+        
+        # Get trade price for P&L calculation
+        trade_price = pos.get("trade_price") or pos.get("entry_price")
+        if trade_price is not None:
+            try:
+                trade_price = float(trade_price)
+            except (ValueError, TypeError):
+                trade_price = None
+        
+        return {
+            "instrument_type": "FUT",
+            "expiry": expiry,
+            "contract_code": str(pos.get("contract_code") or pos.get("instrument_id") or "FUT"),
+            "contract_size": float(pos.get("contract_size", 1_000_000)),
+            "underlying_tenor": str(pos.get("underlying_tenor", "3M")),
+            "tick_size": float(pos.get("tick_size", 0.0025)),
+            "tick_value": float(pos.get("tick_value", 6.25)),
+            "num_contracts": num_contracts * contract_sign,
+            "trade_price": trade_price,
         }
     
     return None
