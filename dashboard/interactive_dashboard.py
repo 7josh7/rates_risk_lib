@@ -289,6 +289,50 @@ def extract_fallback_messages(sabr_surface):
     return messages
 
 
+def sanitize_sabr_diagnostics(diag_dict: dict) -> dict:
+    """
+    Sanitize SABR diagnostics dict for DataFrame display.
+    
+    Converts complex objects (lists, dicts) to readable strings to avoid
+    [object Object] rendering in Streamlit dataframes.
+    """
+    import json
+    
+    result = {}
+    for key, value in diag_dict.items():
+        if isinstance(value, (list, dict)):
+            # Convert complex objects to JSON string
+            try:
+                if isinstance(value, list) and len(value) > 0:
+                    # For fallback_from, create a concise summary
+                    if key == "fallback_from":
+                        summaries = []
+                        for item in value:
+                            if isinstance(item, dict):
+                                req = item.get("requested", "?")
+                                used = item.get("used", "?")
+                                # Format bucket tuples nicely
+                                if isinstance(req, (list, tuple)):
+                                    req = f"{req[0]}x{req[1]}"
+                                if isinstance(used, (list, tuple)):
+                                    used = f"{used[0]}x{used[1]}"
+                                summaries.append(f"{req}→{used}")
+                            else:
+                                summaries.append(str(item))
+                        result[key] = "; ".join(summaries) if summaries else ""
+                    else:
+                        result[key] = json.dumps(value, default=str)
+                elif isinstance(value, dict):
+                    result[key] = json.dumps(value, default=str, sort_keys=True)
+                else:
+                    result[key] = str(value) if value else ""
+            except Exception:
+                result[key] = str(value)
+        else:
+            result[key] = value
+    return result
+
+
 def get_scenario_definitions():
     """Return scenario definitions for display and documentation."""
     return {
@@ -740,7 +784,8 @@ def main():
             # Display SABR parameters per bucket
             diag_rows = []
             for bucket, diag in market_state.sabr_surface.diagnostics_table().items():
-                diag_rows.append({"Bucket": f"{bucket[0]} x {bucket[1]}", **diag})
+                sanitized = sanitize_sabr_diagnostics(diag)
+                diag_rows.append({"Bucket": f"{bucket[0]} x {bucket[1]}", **sanitized})
             diag_df = pd.DataFrame(diag_rows)
             
             st.dataframe(
@@ -959,7 +1004,8 @@ def main():
                 diag_rows = []
                 for bucket, diag in market_state.sabr_surface.diagnostics_table().items():
                     bucket_label = f"{bucket[0]} x {bucket[1]}"
-                    diag_rows.append({"Bucket": bucket_label, **diag})
+                    sanitized = sanitize_sabr_diagnostics(diag)
+                    diag_rows.append({"Bucket": bucket_label, **sanitized})
                 diag_df = pd.DataFrame(diag_rows)
                 st.dataframe(
                     diag_df.style.format(
@@ -1016,9 +1062,33 @@ def main():
         col3.metric("Number of Positions", len(positions_df))
         col4.metric("Curve Date", valuation_date.strftime("%Y-%m-%d"))
         
-        # Display coverage info
+        # Display coverage info with warnings
+        coverage_ratio = curve_risk.coverage_ratio
+        if coverage_ratio < 1.0:
+            st.warning(
+                f"⚠️ **Coverage Warning**: Only {curve_risk.instrument_coverage}/{curve_risk.total_instruments} "
+                f"positions priced ({coverage_ratio:.1%}). DV01/key-rate calculations may be incomplete."
+            )
         if curve_risk.excluded_types:
             st.warning(f"Excluded instrument types: {', '.join(curve_risk.excluded_types)}")
+        
+        # Show any warnings from the risk calculation
+        for warning in curve_risk.warnings:
+            st.warning(warning)
+        
+        # Show failed trades if any
+        if curve_risk.has_failures and curve_risk.failed_trades:
+            with st.expander(f"⚠️ {len(curve_risk.failed_trades)} Position(s) Failed to Price", expanded=False):
+                failure_data = []
+                for f in curve_risk.failed_trades:
+                    failure_data.append({
+                        "Position ID": f.position_id or "UNKNOWN",
+                        "Type": f.instrument_type,
+                        "Stage": f.stage,
+                        "Error": f.error_message[:100] + "..." if len(f.error_message) > 100 else f.error_message,
+                    })
+                st.dataframe(pd.DataFrame(failure_data), width="stretch")
+        
         st.caption(f"Instruments priced: {curve_risk.instrument_coverage}/{curve_risk.total_instruments}")
         
         # Key Rate DV01 using real computed values
@@ -1051,7 +1121,8 @@ def main():
         else:
             diag_rows = []
             for bucket, diag in market_state.sabr_surface.diagnostics_table().items():
-                diag_rows.append({"Bucket": f"{bucket[0]} x {bucket[1]}", **diag})
+                sanitized = sanitize_sabr_diagnostics(diag)
+                diag_rows.append({"Bucket": f"{bucket[0]} x {bucket[1]}", **sanitized})
             diag_df = pd.DataFrame(diag_rows)
             st.dataframe(
                 diag_df.style.format(
@@ -1381,7 +1452,7 @@ def main():
                 st.info(msg)
         
         st.write("Impact of standardized market scenarios on portfolio P&L")
-        st.info("**Computed from repricing under shocked curves** — not hard-coded values")
+        st.info("**Computed from repricing under shocked curves**")
         
         # Display scenario definitions
         st.subheader("📋 Scenario Definitions")
@@ -1420,6 +1491,29 @@ def main():
             )
         
         if scenario_results:
+            # Show coverage warnings from scenario results
+            first_result = scenario_results[0]
+            if first_result.has_failures:
+                st.warning(
+                    f"⚠️ **Coverage Warning**: {first_result.instruments_priced}/{first_result.total_instruments} "
+                    f"positions priced ({first_result.coverage_ratio:.1%}). Scenario P&L may be understated."
+                )
+            for warning in first_result.warnings:
+                st.warning(warning)
+            
+            # Show failed trades if any
+            if first_result.failed_trades:
+                with st.expander(f"⚠️ {len(first_result.failed_trades)} Position(s) Failed", expanded=False):
+                    failure_data = []
+                    for f in first_result.failed_trades:
+                        failure_data.append({
+                            "Position ID": f.position_id or "UNKNOWN",
+                            "Type": f.instrument_type,
+                            "Stage": f.stage,
+                            "Error": f.error_message[:80] + "..." if len(f.error_message) > 80 else f.error_message,
+                        })
+                    st.dataframe(pd.DataFrame(failure_data), width="stretch")
+            
             curve_scenarios_df = scenarios_to_dataframe(scenario_results)
             curve_scenarios_df = curve_scenarios_df.rename(columns={"P&L": "P&L"})
             
@@ -1433,7 +1527,7 @@ def main():
             
             # Show computation method info
             if scenario_results:
-                st.caption(f"Instruments priced per scenario: {scenario_results[0].instruments_priced}")
+                st.caption(f"Instruments priced per scenario: {scenario_results[0].instruments_priced}/{scenario_results[0].total_instruments}")
                 st.caption(f"Method: {scenario_results[0].computation_method}")
         else:
             st.warning("No scenario results computed - check portfolio data")
@@ -1503,13 +1597,54 @@ def main():
             
             st.success("✓ Combined shocks equal full repricing (checklist item 6.1)")
         
-        # Scenario limits
+        # Scenario limits - compute ALL metrics (same as Risk Metrics tab)
+        st.subheader("Scenario Limits")
+        
+        # Build full metrics dictionary using same approach as TAB 3
+        scenario_limit_metrics, scenario_meta = compute_limit_metrics(
+            market_state=market_state,
+            positions_df=positions_df,
+            valuation_date=valuation_date,
+        )
+        
+        # Update with computed scenario worst loss
         worst_scenario = curve_scenarios_df['P&L'].min() if not curve_scenarios_df.empty and 'P&L' in curve_scenarios_df.columns else 0.0
-        scenario_metrics = {"scenario_worst": abs(worst_scenario)}
-        scenario_limits = evaluate_limits(scenario_metrics, DEFAULT_LIMITS)
+        scenario_limit_metrics["scenario_worst"] = abs(worst_scenario)
+        scenario_meta["has_scenario_results"] = True
+        
+        # Inject VaR results from session state if available
+        var_state = st.session_state.get("var_results")
+        if var_state:
+            scenario_limit_metrics.update({k: var_state.get(k) for k in ["var_95", "var_99", "es_975", "lvar_uplift"] if k in var_state})
+            scenario_meta["has_var_results"] = True
+            if "lvar_uplift" in var_state:
+                scenario_meta["has_liquidity_results"] = True
+        
+        # Preserve DV01 from earlier computation if available
+        if scenario_limit_metrics.get("total_dv01") == 0.0:
+            scenario_limit_metrics["total_dv01"] = abs(total_dv01)
+        if scenario_limit_metrics.get("worst_keyrate_dv01") is None:
+            scenario_limit_metrics["worst_keyrate_dv01"] = worst_keyrate
+        
+        # Build status overrides for metrics that aren't applicable/computed
+        scenario_status_overrides = {}
+        if not scenario_meta.get("has_option_positions", False):
+            for key in ["option_delta", "option_gamma", "sabr_vega_atm", "sabr_vega_nu", "sabr_vega_rho"]:
+                scenario_status_overrides[key] = "Not Applicable"
+        elif not scenario_meta.get("computed_option_greeks", False):
+            for key in ["option_delta", "option_gamma", "sabr_vega_atm", "sabr_vega_nu", "sabr_vega_rho"]:
+                scenario_status_overrides[key] = "Not Computed"
+        if not scenario_meta.get("has_var_results", False):
+            for key in ["var_95", "var_99", "es_975"]:
+                scenario_status_overrides[key] = "Not Computed"
+        if not scenario_meta.get("has_liquidity_results", False):
+            scenario_status_overrides["lvar_uplift"] = "Not Computed"
+        if scenario_limit_metrics.get("worst_keyrate_dv01") is None:
+            scenario_status_overrides["worst_keyrate_dv01"] = "Not Computed"
+        
+        scenario_limits = evaluate_limits(scenario_limit_metrics, DEFAULT_LIMITS, status_overrides=scenario_status_overrides)
         scen_table = render_limit_table(scenario_limits)
         if scen_table is not None:
-            st.subheader("Scenario Limits")
             st.dataframe(scen_table, width="stretch")
         
         # Waterfall chart

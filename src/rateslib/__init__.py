@@ -99,6 +99,23 @@ from .market_state import CurveState, MarketState
 # Dispatchers
 from .pricers import price_trade, risk_trade, PricerOutput
 
+# Portfolio builders (production-grade trade construction)
+from .portfolio import (
+    build_bond_trade,
+    build_swap_trade,
+    build_swaption_trade,
+    build_caplet_trade,
+    build_trade_from_position,
+    price_portfolio_with_diagnostics,
+    PortfolioPricingResult,
+    TradeFailure,
+    SIGN_LONG,
+    SIGN_SHORT,
+    PositionValidationError,
+    MissingFieldError,
+    InvalidOptionError,
+)
+
 __all__ = [
     # Version
     "__version__",
@@ -183,4 +200,18 @@ __all__ = [
     "price_trade",
     "risk_trade",
     "PricerOutput",
+    # Portfolio builders
+    "build_bond_trade",
+    "build_swap_trade",
+    "build_swaption_trade",
+    "build_caplet_trade",
+    "build_trade_from_position",
+    "price_portfolio_with_diagnostics",
+    "PortfolioPricingResult",
+    "TradeFailure",
+    "SIGN_LONG",
+    "SIGN_SHORT",
+    "PositionValidationError",
+    "MissingFieldError",
+    "InvalidOptionError",
 ]

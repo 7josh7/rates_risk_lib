@@ -2,6 +2,13 @@
 Portfolio-level risk aggregation helpers used by reporting/UI layers.
 
 Keeps computation out of the dashboard so the UI only orchestrates.
+
+PRODUCTION PRINCIPLES:
+======================
+1. NEVER silently swallow exceptions - return failure diagnostics
+2. Use explicit trade builders - no inference for options
+3. Apply consistent sign conventions throughout
+4. Return coverage metrics so UI can warn when incomplete
 """
 
 from dataclasses import dataclass, field
@@ -15,6 +22,17 @@ from ..pricers.dispatcher import price_trade, risk_trade
 from ..market_state import MarketState, CurveState
 from ..risk.bumping import BumpEngine
 from ..dates import DateUtils
+from ..portfolio.builders import (
+    build_trade_from_position,
+    price_portfolio_with_diagnostics,
+    PortfolioPricingResult,
+    TradeFailure,
+    PositionValidationError,
+    MissingFieldError,
+    InvalidOptionError,
+    SIGN_LONG,
+    SIGN_SHORT,
+)
 
 
 # Default key-rate tenors for bucketing
@@ -34,7 +52,7 @@ def _parse_date(val) -> Optional[date]:
 @dataclass
 class CurveRiskMetrics:
     """
-    Result of portfolio curve risk computation.
+    Result of portfolio curve risk computation with failure tracking.
     
     Attributes:
         total_dv01: Portfolio-level DV01 ($ per 1bp parallel shift)
@@ -45,6 +63,8 @@ class CurveRiskMetrics:
         instrument_coverage: Number of instruments successfully priced
         total_instruments: Total number of instruments in portfolio
         excluded_types: List of instrument types excluded (e.g., missing data)
+        failed_trades: List of TradeFailure objects (never silently ignored)
+        warnings: List of warning messages
     """
     total_dv01: float
     keyrate_dv01: Dict[str, float]
@@ -54,6 +74,18 @@ class CurveRiskMetrics:
     instrument_coverage: int
     total_instruments: int
     excluded_types: List[str] = field(default_factory=list)
+    failed_trades: List[TradeFailure] = field(default_factory=list)
+    warnings: List[str] = field(default_factory=list)
+    
+    @property
+    def coverage_ratio(self) -> float:
+        if self.total_instruments == 0:
+            return 1.0
+        return self.instrument_coverage / self.total_instruments
+    
+    @property
+    def has_failures(self) -> bool:
+        return len(self.failed_trades) > 0 or self.coverage_ratio < 1.0
     
     def to_dict(self) -> Dict[str, Any]:
         return {
@@ -65,6 +97,10 @@ class CurveRiskMetrics:
             "instrument_coverage": self.instrument_coverage,
             "total_instruments": self.total_instruments,
             "excluded_types": self.excluded_types,
+            "coverage_ratio": self.coverage_ratio,
+            "has_failures": self.has_failures,
+            "failed_trades": [f.to_dict() for f in self.failed_trades],
+            "warnings": self.warnings,
         }
     
     def to_dataframe(self) -> pd.DataFrame:
@@ -75,9 +111,14 @@ class CurveRiskMetrics:
         })
 
 
-def _build_trade_from_position(pos: pd.Series, valuation_date: date) -> Optional[Dict[str, Any]]:
+# Keep legacy _build_trade_from_position for backward compatibility
+# but mark as deprecated - use portfolio.builders instead
+def _build_trade_from_position_legacy(pos: pd.Series, valuation_date: date) -> Optional[Dict[str, Any]]:
     """
-    Build a trade dict from a position row.
+    DEPRECATED: Build a trade dict from a position row.
+    
+    This function uses inference for options which is dangerous in production.
+    Use portfolio.builders.build_trade_from_position() instead.
     
     Returns None if the position cannot be converted.
     """
@@ -132,7 +173,43 @@ def _build_trade_from_position(pos: pd.Series, valuation_date: date) -> Optional
             "vol_type": "NORMAL",
         }
     
+    if inst in {"FUT", "FUTURE", "FUTURES"}:
+        # Get expiry date from multiple possible fields
+        expiry = _parse_date(pos.get("expiry_date")) or _parse_date(pos.get("maturity_date"))
+        if not expiry:
+            return None
+        if expiry <= valuation_date:
+            return None  # Expired contract
+        
+        # Handle notional as contract count
+        num_contracts = int(abs(notional)) if notional >= 1 else 1
+        contract_sign = 1 if direction in {"LONG", "BUY", ""} else -1
+        
+        # Get trade price for P&L calculation
+        trade_price = pos.get("trade_price") or pos.get("entry_price")
+        if trade_price is not None:
+            try:
+                trade_price = float(trade_price)
+            except (ValueError, TypeError):
+                trade_price = None
+        
+        return {
+            "instrument_type": "FUT",
+            "expiry": expiry,
+            "contract_code": str(pos.get("contract_code") or pos.get("instrument_id") or "FUT"),
+            "contract_size": float(pos.get("contract_size", 1_000_000)),
+            "underlying_tenor": str(pos.get("underlying_tenor", "3M")),
+            "tick_size": float(pos.get("tick_size", 0.0025)),
+            "tick_value": float(pos.get("tick_value", 6.25)),
+            "num_contracts": num_contracts * contract_sign,
+            "trade_price": trade_price,
+        }
+    
     return None
+
+
+# Re-export as _build_trade_from_position for backward compat
+_build_trade_from_position = _build_trade_from_position_legacy
 
 
 def compute_curve_risk_metrics(
@@ -141,6 +218,7 @@ def compute_curve_risk_metrics(
     valuation_date: date,
     keyrate_tenors: Optional[List[str]] = None,
     bump_bp: float = 1.0,
+    use_explicit_builders: bool = False,
 ) -> CurveRiskMetrics:
     """
     Compute portfolio DV01 and key-rate DV01 using bump-and-reprice.
@@ -148,30 +226,75 @@ def compute_curve_risk_metrics(
     This function replaces synthetic/approximated risk values with actual
     repricing under shocked curves.
     
+    PRODUCTION MODE (use_explicit_builders=True):
+        - Uses explicit trade builders that require all option fields
+        - Never silently drops positions - tracks all failures
+        - Returns warnings when coverage < 100%
+    
+    LEGACY MODE (use_explicit_builders=False, default):
+        - Uses inference-based builders for backward compatibility
+        - May silently skip positions with missing fields
+    
     Args:
         positions_df: DataFrame with position details
         market_state: Current market state (curves + vol surface)
         valuation_date: Valuation date for pricing
         keyrate_tenors: List of tenors for key-rate ladder (default: 2Y,5Y,10Y,30Y)
         bump_bp: Bump size in basis points (default: 1.0)
+        use_explicit_builders: If True, use production-grade explicit builders
     
     Returns:
-        CurveRiskMetrics object with total DV01, key-rate ladder, etc.
+        CurveRiskMetrics object with total DV01, key-rate ladder, and failure tracking
     """
     keyrate_tenors = keyrate_tenors or DEFAULT_KEYRATE_TENORS
     
     # Build list of priceable trades
-    trades = []
-    excluded_types = set()
+    trades: List[Dict[str, Any]] = []
+    excluded_types: set = set()
+    failed_trades: List[TradeFailure] = []
+    warnings: List[str] = []
     
     for _, pos in positions_df.iterrows():
-        trade = _build_trade_from_position(pos, valuation_date)
-        if trade:
-            trades.append(trade)
+        position_id = pos.get("position_id")
+        inst_type = str(pos.get("instrument_type", "UNKNOWN")).upper()
+        
+        if use_explicit_builders:
+            # Production mode: use explicit builders, track failures
+            try:
+                trade = build_trade_from_position(pos, valuation_date)
+                trades.append(trade)
+            except (PositionValidationError, MissingFieldError, InvalidOptionError) as e:
+                failed_trades.append(TradeFailure(
+                    position_id=position_id,
+                    instrument_type=inst_type,
+                    error_type=type(e).__name__,
+                    error_message=str(e),
+                    stage="build",
+                ))
+                excluded_types.add(inst_type)
+            except Exception as e:
+                failed_trades.append(TradeFailure(
+                    position_id=position_id,
+                    instrument_type=inst_type,
+                    error_type=type(e).__name__,
+                    error_message=str(e),
+                    stage="build",
+                ))
+                excluded_types.add(inst_type)
         else:
-            excluded_types.add(str(pos.get("instrument_type", "UNKNOWN")))
+            # Legacy mode: use inference-based builders
+            trade = _build_trade_from_position_legacy(pos, valuation_date)
+            if trade:
+                trades.append(trade)
+            else:
+                excluded_types.add(inst_type)
     
     if not trades:
+        if failed_trades:
+            warnings.append(
+                f"⚠️ All {len(positions_df)} positions failed to build. "
+                "Check position data for missing required fields."
+            )
         return CurveRiskMetrics(
             total_dv01=0.0,
             keyrate_dv01={t: 0.0 for t in keyrate_tenors},
@@ -181,16 +304,27 @@ def compute_curve_risk_metrics(
             instrument_coverage=0,
             total_instruments=len(positions_df),
             excluded_types=list(excluded_types),
+            failed_trades=failed_trades,
+            warnings=warnings,
         )
     
-    # Compute base PV
+    # Compute base PV with failure tracking
     base_pv = 0.0
+    price_failures = 0
     for trade in trades:
         try:
             result = price_trade(trade, market_state)
             base_pv += result.pv
-        except Exception:
-            pass
+        except Exception as e:
+            price_failures += 1
+            if use_explicit_builders:
+                failed_trades.append(TradeFailure(
+                    position_id=trade.get("_position_id"),
+                    instrument_type=trade.get("instrument_type", "UNKNOWN"),
+                    error_type=type(e).__name__,
+                    error_message=str(e),
+                    stage="price",
+                ))
     
     # Compute parallel DV01 using bump-and-reprice
     bump_engine = BumpEngine(market_state.curve.discount_curve)
@@ -264,6 +398,19 @@ def compute_curve_risk_metrics(
     # Find worst key-rate DV01
     worst_keyrate = max(abs(v) for v in keyrate_dv01.values()) if keyrate_dv01 else 0.0
     
+    # Generate warnings
+    coverage = len(trades) / len(positions_df) if len(positions_df) > 0 else 1.0
+    if coverage < 1.0:
+        warnings.append(
+            f"⚠️ Coverage: {coverage:.1%} ({len(trades)}/{len(positions_df)} positions). "
+            f"Some positions were excluded."
+        )
+    if failed_trades:
+        warnings.append(
+            f"⚠️ {len(failed_trades)} position(s) failed to price. "
+            "DV01/key-rate calculations are incomplete."
+        )
+    
     return CurveRiskMetrics(
         total_dv01=total_dv01,
         keyrate_dv01=keyrate_dv01,
@@ -273,6 +420,8 @@ def compute_curve_risk_metrics(
         instrument_coverage=len(trades),
         total_instruments=len(positions_df),
         excluded_types=list(excluded_types),
+        failed_trades=failed_trades,
+        warnings=warnings,
     )
 
 

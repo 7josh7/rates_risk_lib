@@ -1,0 +1,23 @@
+# Sample Trading Book - Positions (v2 - Production Schema)
+# Date: 2024-01-15
+# Source: Sample data for demonstration
+#
+# OPTION FIELDS (REQUIRED FOR PRODUCTION):
+#   SWAPTION: option_type, expiry_tenor, underlying_swap_tenor, payer_receiver, position, strike, notional
+#   CAPLET: option_type, caplet_start_date, caplet_end_date, position, strike, notional
+#
+# Linear instruments use legacy schema (instrument_type, maturity_date, direction, notional, coupon)
+
+position_id,instrument_type,instrument_id,notional,direction,maturity_date,coupon,entry_date,entry_price,option_type,expiry_tenor,expiry_date,underlying_swap_tenor,payer_receiver,position,strike,caplet_start_date,caplet_end_date,is_cap,vol_type
+POS001,UST,UST_2Y,10000000,LONG,2026-01-15,0.0475,2024-01-10,99.94,,,,,,,,,,,
+POS002,UST,UST_5Y,15000000,LONG,2029-01-15,0.0425,2024-01-12,99.55,,,,,,,,,,,
+POS003,UST,UST_10Y,20000000,SHORT,2034-01-15,0.0375,2024-01-08,96.28,,,,,,,,,,,
+POS004,UST,UST_30Y,5000000,LONG,2054-01-15,0.0450,2024-01-11,98.95,,,,,,,,,,,
+POS005,IRS,IRS_5Y,25000000,PAY_FIXED,2029-01-15,0.0428,2024-01-10,0.00,,,,,,,,,,,
+POS006,IRS,IRS_10Y,30000000,REC_FIXED,2034-01-15,0.0415,2024-01-12,0.00,,,,,,,,,,,
+POS007,IRS,IRS_2Y,50000000,PAY_FIXED,2026-01-15,0.0465,2024-01-08,0.00,,,,,,,,,,,
+POS011,SWAPTION,OPT001,10000000,LONG,,0.0,2024-01-10,0.00,SWAPTION,1Y,,5Y,PAYER,LONG,ATM,,,,NORMAL
+POS012,SWAPTION,OPT002,5000000,SHORT,,0.0,2024-01-11,0.00,SWAPTION,2Y,,10Y,RECEIVER,SHORT,ATM,,,,NORMAL
+POS013,SWAPTION,OPT003,8000000,LONG,,0.0,2024-01-12,0.00,SWAPTION,6M,,2Y,PAYER,LONG,0.045,,,,NORMAL
+POS014,CAPLET,CAP001,15000000,LONG,,0.0,2024-01-14,0.00,CAPLET,,,,,LONG,ATM,2024-06-15,2024-09-15,TRUE,NORMAL
+POS015,CAPLET,CAP002,10000000,SHORT,,0.0,2024-01-14,0.00,CAPLET,,,,,SHORT,0.05,2024-09-15,2024-12-15,TRUE,NORMAL

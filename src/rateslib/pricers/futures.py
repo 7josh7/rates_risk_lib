@@ -181,11 +181,15 @@ class FuturesPricer:
         """
         Calculate DV01 for futures position.
         
-        For 3M futures: DV01 = Notional * 0.25 / 10000 per contract
+        Convention: DV01 = -dPV/dRate, so:
+        - Positive DV01 for positions that LOSE when rates RISE (long futures)
+        - Negative DV01 for positions that GAIN when rates RISE (short futures)
+        
+        For 3M futures: DV01 = Notional * 0.25 / 10000 per contract = $25
         
         Args:
             contract: Futures contract
-            num_contracts: Number of contracts (positive = long)
+            num_contracts: Number of contracts (positive = long, negative = short)
             
         Returns:
             DV01 in dollars (positive for long position)
@@ -195,9 +199,10 @@ class FuturesPricer:
         tenor_years = DateUtils.tenor_to_years(contract.underlying_tenor)
         dv01_per_contract = contract.contract_size * tenor_years / 10000.0
         
-        # Long futures gains when rates fall (price rises)
-        # So DV01 is negative (value falls when rates rise by 1bp)
-        return -num_contracts * dv01_per_contract
+        # Long futures: when rates rise, price falls, position loses value
+        # DV01 = -(dPV/dRate) = -(-25) = +25 for long
+        # For short: DV01 = -(-(-25)) = -25
+        return num_contracts * dv01_per_contract
     
     def position_pv(
         self,

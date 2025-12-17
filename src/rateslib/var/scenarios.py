@@ -8,6 +8,12 @@ Implements predefined and custom scenarios:
 - Historical scenarios (specific dates)
 
 Scenarios are defined as rate changes at each key tenor.
+
+PRODUCTION PRINCIPLES:
+======================
+1. NEVER silently swallow exceptions - return failure diagnostics
+2. Use explicit trade builders for options - no inference
+3. Return coverage metrics so UI can warn when incomplete
 """
 
 from dataclasses import dataclass, field
@@ -22,6 +28,15 @@ from ..dates import DateUtils
 from ..risk.bumping import BumpEngine
 from ..market_state import MarketState, CurveState
 from ..vol.sabr_surface import SabrSurfaceState, SabrBucketParams, BucketKey
+from ..portfolio.builders import (
+    build_trade_from_position,
+    price_portfolio_with_diagnostics,
+    PortfolioPricingResult,
+    TradeFailure,
+    PositionValidationError,
+    MissingFieldError,
+    InvalidOptionError,
+)
 
 
 @dataclass
@@ -558,7 +573,10 @@ class PortfolioScenarioResult:
         pnl: Scenario P&L (scenario_pv - base_pv)
         curve_bump_profile: The curve bumps applied
         instruments_priced: Number of instruments successfully priced
+        total_instruments: Total number of instruments in portfolio
+        failed_trades: List of TradeFailure objects
         computation_method: Description of how computed
+        warnings: List of warning messages
     """
     scenario_name: str
     description: str
@@ -567,7 +585,20 @@ class PortfolioScenarioResult:
     pnl: float
     curve_bump_profile: Dict[str, float]
     instruments_priced: int = 0
+    total_instruments: int = 0
+    failed_trades: List[TradeFailure] = field(default_factory=list)
     computation_method: str = "bump-and-reprice"
+    warnings: List[str] = field(default_factory=list)
+    
+    @property
+    def coverage_ratio(self) -> float:
+        if self.total_instruments == 0:
+            return 1.0
+        return self.instruments_priced / self.total_instruments
+    
+    @property
+    def has_failures(self) -> bool:
+        return len(self.failed_trades) > 0 or self.coverage_ratio < 1.0
     
     def to_dict(self) -> Dict[str, Any]:
         return {
@@ -578,12 +609,23 @@ class PortfolioScenarioResult:
             "pnl": self.pnl,
             "curve_bump_profile": self.curve_bump_profile,
             "instruments_priced": self.instruments_priced,
+            "total_instruments": self.total_instruments,
+            "coverage_ratio": self.coverage_ratio,
+            "has_failures": self.has_failures,
+            "failed_trades": [f.to_dict() for f in self.failed_trades],
             "computation_method": self.computation_method,
+            "warnings": self.warnings,
         }
 
 
-def _build_trade_from_position(pos: pd.Series, valuation_date: date) -> Optional[Dict[str, Any]]:
-    """Build a trade dict from a position row."""
+# Legacy function for backward compatibility
+def _build_trade_from_position_legacy(pos: pd.Series, valuation_date: date) -> Optional[Dict[str, Any]]:
+    """
+    DEPRECATED: Build a trade dict from a position row.
+    
+    Uses inference for options which is dangerous in production.
+    Use portfolio.builders.build_trade_from_position() instead.
+    """
     inst = str(pos.get("instrument_type", "")).upper()
     notional = float(abs(pos.get("notional", 0.0)))
     direction = str(pos.get("direction", "")).upper()
@@ -644,23 +686,73 @@ def _build_trade_from_position(pos: pd.Series, valuation_date: date) -> Optional
     return None
 
 
-def _price_portfolio(
+# Re-export as _build_trade_from_position for backward compat
+_build_trade_from_position = _build_trade_from_position_legacy
+
+
+@dataclass
+class PortfolioPriceResult:
+    """Result of pricing a portfolio with failure tracking."""
+    total_pv: float
+    count_priced: int
+    count_failed: int
+    failed_trades: List[TradeFailure]
+    
+    @property
+    def coverage_ratio(self) -> float:
+        total = self.count_priced + self.count_failed
+        if total == 0:
+            return 1.0
+        return self.count_priced / total
+
+
+def _price_portfolio_with_tracking(
     trades: List[Dict[str, Any]],
     market_state: MarketState,
-) -> Tuple[float, int]:
-    """Price a list of trades under a given market state. Returns (total_pv, count_priced)."""
+) -> PortfolioPriceResult:
+    """
+    Price a list of trades under a given market state with failure tracking.
+    
+    NEVER silently swallows exceptions - records all failures.
+    """
     from ..pricers.dispatcher import price_trade
     
     total_pv = 0.0
-    count = 0
+    count_priced = 0
+    failed_trades: List[TradeFailure] = []
+    
     for trade in trades:
         try:
             result = price_trade(trade, market_state)
             total_pv += result.pv
-            count += 1
-        except Exception:
-            pass
-    return total_pv, count
+            count_priced += 1
+        except Exception as e:
+            failed_trades.append(TradeFailure(
+                position_id=trade.get("_position_id"),
+                instrument_type=trade.get("instrument_type", "UNKNOWN"),
+                error_type=type(e).__name__,
+                error_message=str(e),
+                stage="price",
+            ))
+    
+    return PortfolioPriceResult(
+        total_pv=total_pv,
+        count_priced=count_priced,
+        count_failed=len(failed_trades),
+        failed_trades=failed_trades,
+    )
+
+
+def _price_portfolio(
+    trades: List[Dict[str, Any]],
+    market_state: MarketState,
+) -> Tuple[float, int]:
+    """
+    Legacy function for backward compatibility.
+    Returns (total_pv, count_priced).
+    """
+    result = _price_portfolio_with_tracking(trades, market_state)
+    return result.total_pv, result.count_priced
 
 
 def run_scenario_set(
@@ -668,6 +760,7 @@ def run_scenario_set(
     market_state: MarketState,
     valuation_date: date,
     scenarios: Optional[Dict[str, Scenario]] = None,
+    use_explicit_builders: bool = False,
 ) -> List[PortfolioScenarioResult]:
     """
     Run a set of scenarios on a portfolio using full bump-and-reprice.
@@ -675,29 +768,87 @@ def run_scenario_set(
     This function replaces hard-coded scenario P&Ls with actual repricing
     under shocked curves.
     
+    PRODUCTION MODE (use_explicit_builders=True):
+        - Uses explicit trade builders that require all option fields
+        - Never silently drops positions - tracks all failures
+        - Returns warnings when coverage < 100%
+    
+    LEGACY MODE (use_explicit_builders=False, default):
+        - Uses inference-based builders for backward compatibility
+    
     Args:
         positions_df: DataFrame with position details
         market_state: Current market state (curves + vol surface)
         valuation_date: Valuation date for pricing
         scenarios: Dict of scenario name -> Scenario. Uses STANDARD_SCENARIOS if None.
+        use_explicit_builders: If True, use production-grade explicit builders
     
     Returns:
         List of PortfolioScenarioResult objects, one per scenario.
     """
     scenarios = scenarios or STANDARD_SCENARIOS
     
-    # Build trades from positions
-    trades = []
+    # Build trades from positions with failure tracking
+    trades: List[Dict[str, Any]] = []
+    build_failures: List[TradeFailure] = []
+    
     for _, pos in positions_df.iterrows():
-        trade = _build_trade_from_position(pos, valuation_date)
-        if trade:
-            trades.append(trade)
+        position_id = pos.get("position_id")
+        inst_type = str(pos.get("instrument_type", "UNKNOWN")).upper()
+        
+        if use_explicit_builders:
+            try:
+                trade = build_trade_from_position(pos, valuation_date)
+                trades.append(trade)
+            except (PositionValidationError, MissingFieldError, InvalidOptionError) as e:
+                build_failures.append(TradeFailure(
+                    position_id=position_id,
+                    instrument_type=inst_type,
+                    error_type=type(e).__name__,
+                    error_message=str(e),
+                    stage="build",
+                ))
+            except Exception as e:
+                build_failures.append(TradeFailure(
+                    position_id=position_id,
+                    instrument_type=inst_type,
+                    error_type=type(e).__name__,
+                    error_message=str(e),
+                    stage="build",
+                ))
+        else:
+            trade = _build_trade_from_position_legacy(pos, valuation_date)
+            if trade:
+                trades.append(trade)
     
     if not trades:
-        return []
+        # Return empty results with warning
+        warnings = []
+        if build_failures:
+            warnings.append(
+                f"⚠️ All {len(positions_df)} positions failed to build. "
+                "Check position data for missing required fields."
+            )
+        return [
+            PortfolioScenarioResult(
+                scenario_name=s.name,
+                description=s.description,
+                base_pv=0.0,
+                scenario_pv=0.0,
+                pnl=0.0,
+                curve_bump_profile=s.bump_profile,
+                instruments_priced=0,
+                total_instruments=len(positions_df),
+                failed_trades=build_failures,
+                computation_method="No tradeable positions",
+                warnings=warnings,
+            )
+            for s in scenarios.values()
+        ]
     
-    # Compute base PV
-    base_pv, base_count = _price_portfolio(trades, market_state)
+    # Compute base PV with failure tracking
+    base_result = _price_portfolio_with_tracking(trades, market_state)
+    all_failures = build_failures + base_result.failed_trades
     
     results = []
     
@@ -710,19 +861,35 @@ def run_scenario_set(
         )
         
         # Price portfolio under shocked curves
-        scenario_pv, scenario_count = _price_portfolio(trades, shocked_market)
+        scenario_result = _price_portfolio_with_tracking(trades, shocked_market)
         
-        pnl = scenario_pv - base_pv
+        pnl = scenario_result.total_pv - base_result.total_pv
+        
+        # Generate warnings
+        warnings = []
+        coverage = base_result.count_priced / len(positions_df) if len(positions_df) > 0 else 1.0
+        if coverage < 1.0:
+            warnings.append(
+                f"⚠️ Coverage: {coverage:.1%} ({base_result.count_priced}/{len(positions_df)} positions). "
+                "Scenario P&L may be understated."
+            )
+        if all_failures:
+            warnings.append(
+                f"⚠️ {len(all_failures)} position(s) failed to price."
+            )
         
         results.append(PortfolioScenarioResult(
             scenario_name=scenario.name,
             description=scenario.description,
-            base_pv=base_pv,
-            scenario_pv=scenario_pv,
+            base_pv=base_result.total_pv,
+            scenario_pv=scenario_result.total_pv,
             pnl=pnl,
             curve_bump_profile=scenario.bump_profile,
-            instruments_priced=scenario_count,
+            instruments_priced=base_result.count_priced,
+            total_instruments=len(positions_df),
+            failed_trades=all_failures,
             computation_method="Computed from repricing under shocked curves",
+            warnings=warnings,
         ))
     
     return results
@@ -733,6 +900,7 @@ def run_single_scenario(
     market_state: MarketState,
     valuation_date: date,
     scenario: Scenario,
+    use_explicit_builders: bool = False,
 ) -> PortfolioScenarioResult:
     """
     Run a single scenario on a portfolio using full bump-and-reprice.
@@ -742,6 +910,7 @@ def run_single_scenario(
         market_state: Current market state
         valuation_date: Valuation date
         scenario: The scenario to run
+        use_explicit_builders: If True, use production-grade explicit builders
     
     Returns:
         PortfolioScenarioResult
@@ -751,6 +920,7 @@ def run_single_scenario(
         market_state=market_state,
         valuation_date=valuation_date,
         scenarios={scenario.name: scenario},
+        use_explicit_builders=use_explicit_builders,
     )
     return results[0] if results else PortfolioScenarioResult(
         scenario_name=scenario.name,

@@ -91,6 +91,7 @@ def price_trade(trade: Dict[str, Any], market_state: MarketState) -> PricerOutpu
         )
 
     if inst in {"FUT", "FUTURE", "FUTURES"}:
+        # Build contract specification
         contract = FuturesContract(
             contract_code=trade.get("contract_code", "FUT"),
             expiry=trade["expiry"],
@@ -98,13 +99,50 @@ def price_trade(trade: Dict[str, Any], market_state: MarketState) -> PricerOutpu
             tick_size=float(trade.get("tick_size", 0.0025)),
             underlying_tenor=str(trade.get("underlying_tenor", "3M")),
         )
+        
         pricer = FuturesPricer(curve_state.discount_curve)
-        price = pricer.theoretical_price(contract)
-        dv01 = pricer.dv01(contract, int(trade.get("num_contracts", 1)))
+        theoretical_price = pricer.theoretical_price(contract)
+        
+        # Get signed contract count (positive=long, negative=short)
+        num_contracts = int(trade.get("num_contracts", 1))
+        
+        # Compute DV01 using the pricer (handles sign internally)
+        dv01 = pricer.dv01(contract, num_contracts)
+        
+        # PV calculation for bump-and-reprice:
+        # If we have a trade_price, compute mark-to-market P&L
+        # Otherwise, PV represents the "model value" from current implied rate
+        trade_price = trade.get("trade_price")
+        tick_size = contract.tick_size
+        tick_value = float(trade.get("tick_value", 6.25))  # Default SOFR tick value
+        
+        if trade_price is not None:
+            # P&L = (current_price - trade_price) / tick_size * tick_value * num_contracts
+            price_change = theoretical_price - float(trade_price)
+            pv = (price_change / tick_size) * tick_value * num_contracts
+        else:
+            # No trade price: compute PV based on deviation from par (100.0)
+            # This allows bump-and-reprice to work - PV changes as curve changes
+            # Convention: long futures gains value when price > 100 (rates < 0)
+            # For typical positive-rate environment, use price deviation from current
+            # For bump-and-reprice, what matters is the CHANGE in PV, not absolute level
+            # So we use a consistent reference: PV = (price - 100) * sensitivity factor
+            # where sensitivity factor = (contract_size * tenor / 10000) per contract
+            # This gives us the same DV01 behavior as the formula
+            tenor_years = DateUtils.tenor_to_years(contract.underlying_tenor)
+            sensitivity_per_contract = contract.contract_size * tenor_years / 100.0  # per price point
+            pv = (theoretical_price - 100.0) * sensitivity_per_contract * num_contracts
+        
         return PricerOutput(
             instrument_type=inst,
-            pv=0.0,  # Futures PV is margin-based; report theoretical price instead
-            details={"theoretical_price": price, "dv01": dv01},
+            pv=pv,
+            details={
+                "theoretical_price": theoretical_price,
+                "implied_rate": pricer.implied_rate(contract.expiry, contract.underlying_tenor),
+                "dv01": dv01,
+                "num_contracts": num_contracts,
+                "trade_price": trade_price,
+            },
         )
 
     if inst == "SWAPTION":
