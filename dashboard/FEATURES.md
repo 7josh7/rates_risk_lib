@@ -45,8 +45,8 @@ The Interactive Analytics Dashboard is a comprehensive Streamlit-based web appli
 - `NelsonSiegelSvensson`
 - `Curve.discount_factor()`
 - `Curve.get_nodes()`
-- `SabrSurface.get_implied_vol()`
-- `SabrModel.black_vol()` / `normal_vol()`
+- `SabrSurfaceState.get_bucket_params()` / `SabrSurfaceState.diagnostics_table()`
+- `SabrModel.implied_vol_black()` / `SabrModel.implied_vol_normal()`
 
 ---
 
@@ -174,17 +174,21 @@ The Interactive Analytics Dashboard is a comprehensive Streamlit-based web appli
 - Sorted by impact
 
 **Custom Scenario Builder**:
-- **NSS Curve Parameter Tweaking**:
-  - β₀ (level): -2.0% to +2.0%
-  - β₁ (slope): -2.0% to +2.0%
-  - β₂ (curvature): -2.0% to +2.0%
-  - β₃ (2nd hump): -1.0% to +1.0%
-  - λ₁ (decay 1): 0.5 to 5.0
+- **Curve Shifts**:
+  - Parallel shift: -200bp to +200bp
+  - Twist: -100bp to +100bp (configurable pivot)
+  - 2s10s steepening/flattening: -75bp to +75bp
+- **NSS Curve Parameter Tweaking (absolute parameters)**:
+  - β₀ (level): 0.00 to 0.10
+  - β₁ (slope): -0.10 to +0.10
+  - β₂ (curvature 1): -0.10 to +0.10
+  - β₃ (curvature 2): -0.10 to +0.10
+  - λ₁ (decay 1): 0.1 to 5.0
   - λ₂ (decay 2): 0.5 to 10.0
 - **SABR Parameter Stressing**:
-  - σ_ATM scale: -50% to +100%
-  - ν (vol of vol) scale: -50% to +100%
-  - ρ (correlation) shift: -0.3 to +0.3
+  - σ_ATM scale: 0.5x to 2.0x
+  - ν scale: 0.5x to 3.0x
+  - ρ shift: -0.5 to +0.5
 - **Live Yield Curve Visualization**:
   - Base curve (blue)
   - Stressed curve (red)
@@ -201,10 +205,18 @@ The Interactive Analytics Dashboard is a comprehensive Streamlit-based web appli
 - Color gradient background
 - Formatted currency display
 
+**Vol-Only Scenarios**:
+- Vol Shock +50%
+- Vol Shock -30%
+- Nu Stress +100%
+- Rho Stress -0.5
+- Crisis Vol (combined vol + smile stress)
+
 **Library Coverage**:
 - `ScenarioEngine`
 - `STANDARD_SCENARIOS`
 - `run_scenario_set()` with full repricing
+- `VOL_ONLY_SCENARIOS` / `run_vol_only_scenarios()`
 - `apply_market_scenario()` for curve + SABR shocks
 - `NelsonSiegelSvensson` parameter manipulation
 - `SabrShock` and volatility surface stressing
@@ -213,7 +225,7 @@ The Interactive Analytics Dashboard is a comprehensive Streamlit-based web appli
 ---
 
 ### 💵 Tab 6: P&L Attribution
-**Purpose**: Decompose daily P&L into components
+**Purpose**: Decompose P&L into components
 
 **Features**:
 
@@ -238,15 +250,14 @@ The Interactive Analytics Dashboard is a comprehensive Streamlit-based web appli
 - Color gradient
 
 **Library Coverage**:
-- `PnLAttributionEngine`
 - `PnLComponents`
-- `PnLAttribution`
-- Carry/rolldown calculations
+- `attribute_curve_vs_vol()`
+- `compute_option_pnl_attribution()` / `aggregate_options_attribution()`
 
 ---
 
 ### 💧 Tab 7: Liquidity Risk
-**Purpose**: Liquidity-adjusted VaR (LVaR) calculations
+**Purpose**: Liquidity-adjusted VaR (LVaR) what-if analysis
 
 **Features**:
 
@@ -348,7 +359,7 @@ The Interactive Analytics Dashboard is a comprehensive Streamlit-based web appli
 ### Modules Covered ✅
 - ✅ Curves (OISBootstrapper, NelsonSiegelSvensson, Interpolation)
 - ✅ Pricers (BondPricer, SwapPricer, FuturesPricer, SwaptionPricer, CapletPricer)
-- ✅ SABR/Volatility (SabrModel, SabrSurface, VolQuotes, Calibration)
+- ✅ SABR/Volatility (SabrModel, SabrSurfaceState, VolQuote, Calibration)
 - ✅ Options (Swaptions, Caplets/Floors, Greeks)
 - ✅ Risk (BumpEngine, RiskCalculator, KeyRateEngine)
 - ✅ VaR (HistoricalSimulation, MonteCarloVaR, StressedVaR)
@@ -357,7 +368,7 @@ The Interactive Analytics Dashboard is a comprehensive Streamlit-based web appli
 - ✅ Liquidity (LiquidityEngine, LiquidityAdjustedVaR)
 - ✅ Conventions (DayCount, DateUtils)
 - ✅ Reporting (data export, CSV generation)
-- ✅ Position Coverage (100% - all 12 positions pricing successfully)
+- ✅ Position Coverage (all 12 sample positions price successfully)
 
 ### Functions Previously Not Covered (NOW COVERED ✅)
 - ✅ Options/SABR (now fully integrated with vol surface visualization)
@@ -435,8 +446,7 @@ The Interactive Analytics Dashboard is a comprehensive Streamlit-based web appli
 ## Future Enhancements (Out of Scope)
 
 Potential additions that could be made:
-- SABR volatility surface (when vol data available)
-- Options Greeks calculator
+- Full joint curve+vol scenarios (true combined repricing and cross-gamma residual)
 - Historical P&L tracking over time
 - Multi-portfolio comparison
 - Real-time data feeds
@@ -449,7 +459,7 @@ Potential additions that could be made:
 
 ## Conclusion
 
-The Interactive Analytics Dashboard successfully covers **100% of implemented library functionality** including the recently integrated SABR/volatility models. It provides a professional, user-friendly interface for:
+The Interactive Analytics Dashboard covers the library’s core workflows (curves, pricing, risk, VaR, scenarios, SABR) with coverage diagnostics and interactive visualizations. A few panels (e.g., liquidity what-if calculator and combined curve+vol additivity check) are intentionally simplified for demonstration.
 
 - ✅ Yield curve analysis
 - ✅ Instrument pricing (linear and options)
@@ -470,4 +480,4 @@ The dashboard is production-ready, well-documented, and follows best practices f
 - Enhanced custom scenario builder with live visualization
 - Full SABR integration across pricing and risk
 - Robust NaN/NaT handling for data quality
-- Real-time P&L attribution with curve vs vol breakdown
+- Greeks-based options P&L attribution (with curve vs vol decomposition support)

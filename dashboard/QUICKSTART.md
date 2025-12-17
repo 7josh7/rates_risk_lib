@@ -61,6 +61,8 @@ The dashboard will automatically open in your default browser at http://localhos
 
 The Interactive Analytics Dashboard provides 8 main tabs:
 
+**Optional SABR features**: Ensure `../data/vol_quotes.csv` is present to enable the SABR surface, vol-only scenarios, SABR tail analysis, and options/Greeks panels.
+
 ### 📈 Curves Tab
 Visualize and analyze yield curves:
 - OIS curve bootstrap results
@@ -121,6 +123,8 @@ Stress testing and scenario analysis:
   - Live curve visualization (base vs stressed)
   - **Run Custom Scenario** for full portfolio repricing
   - P&L attribution (curve vs vol)
+- Vol-only scenarios (SABR shocks) computed via repricing when SABR is available
+- Combined curve+vol check is additive (curve P&L + vol P&L), not a full joint repricing
 
 **What to try:**
 - See impact of +100bp parallel shift
@@ -137,6 +141,7 @@ Decompose portfolio P&L:
 - **Volatility moves** (for options positions)
 - Convexity
 - Residual
+  - Note: options attribution is Greeks-based using user-specified Δrate/Δvol inputs; linear attribution is illustrative
 
 **What to try:**
 - Understand which components drive P&L
@@ -145,7 +150,7 @@ Decompose portfolio P&L:
 - **View separate curve and vol attribution** for options
 
 ### 💧 Liquidity Risk Tab
-Liquidity-adjusted VaR:
+Liquidity-adjusted VaR (simplified what-if):
 - Bid/ask spread impacts
 - Holding period scaling
 - Position size effects

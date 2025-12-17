@@ -71,14 +71,24 @@ A comprehensive Python library for USD yield curve construction, fixed-income in
 
 ```bash
 # Clone the repository
-git clone https://github.com/yourusername/rates_risk_lib.git
+git clone https://github.com/7josh7/rates_risk_lib.git
 cd rates_risk_lib
 
 # Install in development mode
 pip install -e .
 
-# Or install dependencies directly
+# Or install core dependencies directly
 pip install numpy pandas scipy pyyaml
+```
+
+### Optional: Dashboard Dependencies
+
+The dashboards have optional dependencies that are not part of the core library install:
+
+```bash
+cd dashboard
+pip install -r requirements_interactive.txt   # Streamlit dashboard
+pip install -r requirements.txt               # Shiny dashboard
 ```
 
 ## Quick Start
@@ -180,7 +190,14 @@ streamlit run interactive_dashboard.py
 - **💧 Liquidity Risk**: LVaR calculations, bid-ask impacts, holding period scaling
 - **📋 Data Explorer**: Browse market data, positions, curve nodes, export to CSV
 
+**Notes:**
+- The dashboard includes a few intentionally simplified panels (e.g., liquidity “what-if” calculator and combined curve+vol additivity check). See `dashboard/README.md` for details.
+
 See `dashboard/README.md` for detailed dashboard documentation.
+
+## Technical Documentation
+
+- Full technical write-up: `documentation.tex`
 
 ## Project Structure
 
@@ -191,6 +208,7 @@ rates_risk_lib/
 │       ├── __init__.py
 │       ├── conventions.py     # Day count, business day conventions
 │       ├── dates.py           # Tenor parsing, schedule generation
+│       ├── market_state.py    # Curves + SABR surface container
 │       ├── curves/
 │       │   ├── __init__.py
 │       │   ├── curve.py       # Curve class with interpolation
@@ -213,14 +231,19 @@ rates_risk_lib/
 │       ├── vol/
 │       │   ├── __init__.py
 │       │   ├── sabr.py        # SABR model implementation
-│       │   ├── sabr_surface.py # Vol surface management
 │       │   ├── calibration.py # SABR calibration
-│       │   └── quotes.py      # Vol quote handling
+│       │   ├── quotes.py      # Vol quote handling
+│       │   └── sabr_surface.py # Vol surface management
+│       ├── portfolio/
+│       │   ├── __init__.py
+│       │   └── builders.py    # Trade builders + validation
 │       ├── risk/
 │       │   ├── __init__.py
 │       │   ├── bumping.py     # Bump engine
+│       │   ├── keyrate.py     # Key-rate DV01
+│       │   ├── limits.py      # Risk limits and evaluation
+│       │   ├── reporting.py   # Reporting engines + coverage diagnostics
 │       │   ├── sensitivities.py
-│       │   └── keyrate.py     # Key-rate DV01
 │       ├── pnl/
 │       │   ├── __init__.py
 │       │   └── attribution.py # P&L decomposition
@@ -231,18 +254,23 @@ rates_risk_lib/
 │       │   ├── stress.py      # Stressed VaR
 │       │   └── scenarios.py   # Scenario analysis
 │       ├── liquidity/
-│       │   └── __init__.py    # Liquidity adjustments
+│       │   └── __init__.py    # Liquidity adjustments and LVaR
 │       └── reporting/
 │           ├── __init__.py
 │           └── risk_report.py # Report generation
 ├── data/
 │   ├── sample_quotes/         # Market data samples
 │   └── sample_book/           # Position data samples
+│   └── vol_quotes.csv         # Sample vol quotes (optional)
 ├── dashboard/
 │   ├── app.py                 # Real-time risk monitor (Shiny)
 │   ├── interactive_dashboard.py  # Interactive analytics (Streamlit)
+│   ├── FEATURES.md
+│   ├── QUICKSTART.md
 │   ├── requirements.txt       # Shiny dependencies
 │   ├── requirements_interactive.txt  # Streamlit dependencies
+│   ├── launch_interactive.bat
+│   └── launch_interactive.sh
 │   └── README.md              # Dashboard documentation
 ├── scripts/
 │   ├── run_demo.py            # Main demo script
@@ -258,7 +286,10 @@ rates_risk_lib/
 │   ├── test_sabr_risk_conventions.py  # SABR Greeks tests
 │   ├── test_risk.py
 │   ├── test_var.py
+│   ├── test_portfolio_builders.py
+│   ├── test_reporting_engines.py
 │   └── test_limit_reporting.py  # Risk limit tests
+├── documentation.tex
 ├── pyproject.toml
 └── README.md
 ```

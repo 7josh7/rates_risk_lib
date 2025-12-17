@@ -118,11 +118,15 @@
 The \textbf{Rates Risk Library} (\code{rateslib}) is a comprehensive Python library designed for USD yield curve construction, fixed-income instrument pricing, and risk analytics. It provides a complete toolkit for trading desk workflows including:
 
 \begin{itemize}
-    \item Real-time risk monitoring
-    \item P\&L attribution and explain
-    \item Value-at-Risk (VaR) calculations
-    \item Scenario analysis and stress testing
-    \item Regulatory risk metrics computation
+    \item Real-time risk monitoring with DV01 and key-rate duration
+    \item P\&L attribution and explain (linear and options)
+    \item Value-at-Risk (VaR) calculations (historical, Monte Carlo, stressed)
+    \item Scenario analysis and stress testing with curve and vol shocks
+    \item SABR volatility surface calibration and smile-consistent pricing
+    \item Options pricing (caplets, swaptions) with model-consistent Greeks
+    \item Liquidity-adjusted VaR (LVaR) for stressed market conditions
+    \item Interactive Streamlit dashboard with 8 comprehensive tabs
+    \item Regulatory risk metrics and limit monitoring
 \end{itemize}
 
 \section{Library Architecture}
@@ -138,13 +142,16 @@ The library is organized into the following modules:
 \code{conventions} & Day count conventions, business day adjustments, compounding conventions \\
 \code{dates} & Date utilities, tenor parsing, schedule generation \\
 \code{curves} & Yield curve construction, bootstrapping, Nelson-Siegel-Svensson fitting \\
-\code{pricers} & Bond, swap, and futures pricing engines \\
-\code{risk} & DV01, key-rate duration, convexity, bump-and-reprice framework \\
-\code{var} & Historical simulation, Monte Carlo VaR, stress testing \\
-\code{pnl} & P\&L attribution and explain decomposition \\
-\code{vol} & SABR model, vol-quote ingestion, implied-vol calculators, calibration engine \\
-\code{options} & Caplet/swaption pricing using Bachelier/Black'76 with SABR implied vol \\
-\code{reporting} & Output formatting and report generation \\
+\code{pricers} & Bond, swap, and futures pricing engines with dispatcher \\
+\code{risk} & DV01, key-rate duration, convexity, bump-and-reprice framework, limit monitoring \\
+\code{var} & Historical simulation, Monte Carlo VaR, stressed VaR, scenario engine \\
+\code{pnl} & P\&L attribution for linear and options (Greeks-based decomposition) \\
+\code{vol} & SABR model, volatility surface with bucketing, calibration, wildcard support \\
+\code{options} & Caplet/swaption pricing, SABR-consistent Greeks (delta, vega, vanna, volga) \\
+\code{portfolio} & Production-grade trade builders with validation and failure diagnostics \\
+\code{market\_state} & MarketState container for curves, SABR surface, and market data \\
+\code{liquidity} & Liquidity risk metrics and liquidity-adjusted VaR (LVaR) \\
+\code{reporting} & Risk reporting engine with coverage metrics and warnings \\
 \bottomrule
 \end{tabular}
 \caption{Library Module Structure}
@@ -154,15 +161,38 @@ The library is organized into the following modules:
 
 \begin{lstlisting}
 # Clone the repository
-git clone https://github.com/yourusername/rates_risk_lib.git
+git clone https://github.com/7josh7/rates_risk_lib.git
 cd rates_risk_lib
 
 # Install in development mode
 pip install -e .
 
-# Or install dependencies directly
+# Or install core dependencies directly
 pip install numpy pandas scipy pyyaml
+
+# Optional: dashboards
+pip install -r dashboard/requirements_interactive.txt   # Streamlit dashboard
+pip install -r dashboard/requirements.txt               # Shiny dashboard
+
+# Run the interactive dashboard
+cd dashboard
+streamlit run interactive_dashboard.py
 \end{lstlisting}
+
+\subsection{Dashboard Quick Start}
+
+The library includes a comprehensive Streamlit dashboard with 8 tabs:
+
+\begin{enumerate}
+    \item \textbf{Curves}: OIS/Treasury curves, SABR surface visualization
+    \item \textbf{Pricing}: Bonds, swaps, futures, options with SABR
+    \item \textbf{Risk Metrics}: Portfolio DV01, key-rate, convexity, SABR diagnostics
+    \item \textbf{VaR Analysis}: Historical, Monte Carlo, stressed VaR
+    \item \textbf{Scenarios}: Standard scenarios, vol-only shocks, SABR tail stress
+    \item \textbf{P\&L Attribution}: Curve vs vol decomposition, options Greeks P\&L
+    \item \textbf{Liquidity Risk}: LVaR with bid-ask spreads
+    \item \textbf{Data Explorer}: Portfolio positions, vol quotes, market data
+\end{enumerate}
 
 %===============================================================================
 % CHAPTER 2: CONVENTIONS
@@ -1105,7 +1135,134 @@ print(f"  Residual: ${attribution.components.residual:,.2f}")
 \end{lstlisting}
 
 %===============================================================================
-% CHAPTER 8: RATES VOLATILITY AND SABR MODEL
+% CHAPTER 8: MARKET STATE ARCHITECTURE
+%===============================================================================
+\chapter{Market State Architecture}
+
+\section{Overview}
+
+The library uses a unified \code{MarketState} container to encapsulate all market data required for pricing and risk:
+
+\begin{lstlisting}
+from rateslib import MarketState, CurveState
+
+# Create market state
+market_state = MarketState(
+    curve=CurveState(discount_curve=ois_curve,
+                     projection_curve=libor_curve),
+    sabr_surface=sabr_surface,  # Optional
+    asof=date(2024, 1, 15)
+)
+\end{lstlisting}
+
+\subsection{CurveState}
+
+The \code{CurveState} wraps discount and projection curves:
+
+\begin{lstlisting}
+@dataclass
+class CurveState:
+    discount_curve: Curve
+    projection_curve: Optional[Curve] = None
+    
+    def get_projection_curve(self) -> Curve:
+        """Get projection curve, defaulting to discount."""
+        return self.projection_curve or self.discount_curve
+\end{lstlisting}
+
+\subsection{SABR Surface State}
+
+The \code{SabrSurfaceState} manages calibrated SABR parameters by bucket:
+
+\begin{lstlisting}
+from rateslib import SabrSurfaceState, SabrBucketParams
+
+# Create SABR surface with bucketing
+sabr_surface = SabrSurfaceState(
+    params_by_bucket={
+        ("1Y", "5Y"): SabrBucketParams(
+            sigma_atm=0.0075, beta=0.5, rho=-0.20, nu=0.45
+        ),
+        ("2Y", "10Y"): SabrBucketParams(
+            sigma_atm=0.0065, beta=0.5, rho=-0.15, nu=0.40
+        ),
+        # Wildcard bucket for missing expiry/tenor combinations
+        ("ALL", "ALL"): SabrBucketParams(
+            sigma_atm=0.0070, beta=0.5, rho=-0.18, nu=0.42
+        )
+    },
+    missing_bucket_policy="nearest"  # Or "wildcard"
+)
+
+# Query parameters
+params = sabr_surface.get_bucket_params("1Y", "5Y")
+# Falls back to nearest or wildcard if not found
+params_fallback = sabr_surface.get_bucket_params("18M", "7Y")
+\end{lstlisting}
+
+\subsection{Wildcard Bucket Support}
+
+The library supports an \code{("ALL", "ALL")} wildcard bucket that acts as a universal fallback:
+
+\begin{itemize}
+    \item Checked after exact match fails
+    \item Before nearest-neighbor search (if enabled)
+    \item Skipped during distance calculations to avoid tenor parsing errors
+    \item Useful for sparse calibration data or testing
+\end{itemize}
+
+\section{Portfolio Builders}
+
+\subsection{Production-Grade Trade Construction}
+
+The \code{portfolio} module provides validated trade builders:
+
+\begin{lstlisting}
+from rateslib.portfolio import (
+    build_bond_trade,
+    build_swap_trade,
+    build_swaption_trade,
+    build_caplet_trade,
+    build_trade_from_position,
+)
+
+# Build from position row
+try:
+    trade = build_trade_from_position(
+        position_row,
+        market_state,
+        valuation_date
+    )
+    pv = price_trade(trade, market_state).pv
+except PositionValidationError as e:
+    print(f"Validation failed: {e}")
+except MissingFieldError as e:
+    print(f"Missing required field: {e}")
+except InvalidOptionError as e:
+    print(f"Invalid option: {e}")
+\end{lstlisting}
+
+\subsection{Pricing with Diagnostics}
+
+\begin{lstlisting}
+from rateslib.portfolio import price_portfolio_with_diagnostics
+
+result = price_portfolio_with_diagnostics(
+    positions_df,
+    market_state,
+    valuation_date
+)
+
+print(f"Total PV: ${result.total_pv:,.2f}")
+print(f"Positions priced: {result.successful_count}")
+print(f"Positions failed: {result.failed_count}")
+
+for failure in result.failures:
+    print(f"  {failure.position_id}: {failure.error_message}")
+\end{lstlisting}
+
+%===============================================================================
+% CHAPTER 9: RATES VOLATILITY AND SABR MODEL
 %===============================================================================
 \chapter{Rates Volatility and SABR Model Integration}
 
@@ -1115,15 +1272,19 @@ This chapter specifies the integration of the SABR stochastic volatility model i
 
 \subsection{Integration Completeness Criteria}
 
-The SABR integration is complete if and only if:
+The SABR integration is \textbf{fully complete} as of v0.1.0:
 \begin{enumerate}[leftmargin=1.2em,itemsep=0.2em]
-    \item The architecture table (Chapter 1) includes a \code{vol} module and an \code{options} module.
-    \item The library can ingest market vol quotes (normal or lognormal, optionally shifted), calibrate SABR parameters, and produce implied vols per strike.
-    \item At least one vanilla rates option product (caplet or swaption) can be priced by:
+    \item \checkmark The architecture includes \code{vol}, \code{options}, \code{portfolio}, and \code{market\_state} modules.
+    \item \checkmark The library ingests market vol quotes (normal or lognormal, with shift support), calibrates SABR parameters per bucket, and produces implied vols per strike.
+    \item \checkmark Vanilla rates options (caplets and swaptions) are priced by:
     \[
     V = \text{BaseModelPrice}(F_0,K,T,\sigma_{\text{imp}}(K))
     \]
-    \item Risk reports include \textbf{model-consistent Greeks}: delta with smile-dynamics correction, and vega/vanna/volga.
+    \item \checkmark Risk reports include \textbf{model-consistent Greeks}: delta with smile-dynamics correction ($\Delta_{\text{SABR}}$), and vega/vanna/volga.
+    \item \checkmark Production-grade portfolio builders with validation and failure diagnostics.
+    \item \checkmark Wildcard bucket support (\code{("ALL", "ALL")}) for sparse calibration.
+    \item \checkmark Options P\&L attribution with Greeks-based decomposition.
+    \item \checkmark Comprehensive dashboard with SABR visualization across 8 tabs.
 \end{enumerate}
 
 \section{Volatility Quote Schema}
@@ -1199,6 +1360,129 @@ At ATM ($K=F$), this simplifies to:
 \begin{equation}
     \sigma_B^{\text{ATM}} = \frac{\alpha}{F^{1-\beta}}\left[1 + \left(\frac{(1-\beta)^2\alpha^2}{24 F^{2-2\beta}} + \frac{\rho\beta\nu\alpha}{4 F^{1-\beta}} + \frac{(2-3\rho^2)\nu^2}{24}\right)T\right]
 \end{equation}
+
+\section{Complete SABR Workflow}
+
+\subsection{End-to-End Example}
+
+\begin{lstlisting}
+from rateslib import (
+    OISBootstrapper,
+    build_sabr_surface,
+    normalize_vol_quotes,
+    MarketState,
+    CurveState,
+    build_trade_from_position,
+    price_trade,
+    SabrOptionRisk,
+)
+from datetime import date
+import pandas as pd
+
+valuation_date = date(2024, 1, 15)
+
+# 1. Build an OIS curve from sample quotes
+ois_quotes = pd.read_csv("data/sample_quotes/ois_quotes.csv", comment="#")
+bootstrapper = OISBootstrapper(valuation_date)
+for _, row in ois_quotes.iterrows():
+    bootstrapper.add_quote(str(row["tenor"]), float(row["rate"]))
+ois_curve = bootstrapper.bootstrap().curve
+
+curve_state = CurveState(
+    discount_curve=ois_curve,
+    projection_curve=ois_curve,
+    metadata={"valuation_date": str(valuation_date)},
+)
+
+# 2. Load and normalize vol quotes (requires curve_state)
+vol_quotes_df = pd.read_csv("data/vol_quotes.csv", comment="#")
+normalized = normalize_vol_quotes(vol_quotes_df, curve_state, instrument_hint="SWAPTION")
+
+# 3. Build SABR surface (bucketed by expiry x tenor)
+sabr_surface = build_sabr_surface(normalized, curve_state, beta_policy=0.5)
+
+# 4. Create market state
+market_state = MarketState(curve=curve_state, sabr_surface=sabr_surface, asof=str(valuation_date))
+
+# 5. Build and price a swaption from the sample book
+positions_df = pd.read_csv("data/sample_book/positions.csv", comment="#")
+swaption_pos = positions_df[positions_df["instrument_type"] == "SWAPTION"].iloc[0]
+swaption_trade = build_trade_from_position(swaption_pos, valuation_date)
+
+price_result = price_trade(swaption_trade, market_state)
+print(f"PV: ${price_result.pv:,.2f}")
+print(f"Forward: {price_result.forward*100:.3f}%")
+print(f"Implied Vol: {price_result.implied_vol*10000:.1f} bp")
+
+# 6. Compute SABR-consistent risk
+risk_engine = SabrOptionRisk(vol_type="NORMAL")
+
+# Get SABR params for this bucket
+params = market_state.sabr_surface.get_bucket_params("1Y", "5Y")
+sabr_params = params.to_sabr_params()
+
+# Compute risk report
+risk_report = risk_engine.risk_report(
+    F=price_result.forward,
+    K=price_result.forward,  # ATM
+    T=1.0,  # 1 year to expiry
+    sabr_params=sabr_params,
+    annuity=price_result.annuity,
+    is_call=True,
+    notional=float(swaption_trade.get("notional", 1.0))
+)
+
+print(f"\nRisk Report:")
+print(f"  Delta (base):      {risk_report.delta_base:,.0f}")
+print(f"  Delta (SABR):      {risk_report.delta_sabr:,.0f}")
+print(f"  Delta (sideways):  {risk_report.delta_sideways:,.0f}")
+print(f"  Delta (backbone):  {risk_report.delta_backbone:,.0f}")
+print(f"  Vega (ATM):        {risk_report.vega_atm:,.0f}")
+print(f"  Vanna:             {risk_report.vanna:,.0f}")
+print(f"  Volga:             {risk_report.volga:,.0f}")
+\end{lstlisting}
+
+\subsection{Options P\&L Attribution Example}
+
+\begin{lstlisting}
+from rateslib.pnl.attribution import (
+    compute_option_pnl_attribution,
+    aggregate_options_attribution
+)
+
+# Load portfolio with options
+positions_df = pd.read_csv('data/sample_book/positions.csv', 
+                           comment='#')
+
+# Compute attribution for 10bp rate move, 20bp vol move, 1 day
+attributions = compute_option_pnl_attribution(
+    positions_df=positions_df,
+    market_state=market_state,
+    valuation_date=valuation_date,
+    rate_move_bp=10,
+    vol_move_bp=20,
+    days_passed=1
+)
+
+print(f"Found {len(attributions)} option positions\n")
+
+for attr in attributions:
+    print(f"{attr.instrument_id}:")
+    print(f"  Delta P&L:  ${attr.delta_pnl:,.2f}")
+    print(f"  Vega P&L:   ${attr.vega_pnl:,.2f}")
+    print(f"  Gamma P&L:  ${attr.gamma_pnl:,.2f}")
+    print(f"  Theta P&L:  ${attr.theta_pnl:,.2f}")
+    print(f"  Total:      ${attr.total_pnl:,.2f}\n")
+
+# Aggregate across portfolio
+agg = aggregate_options_attribution(attributions)
+print("Portfolio Totals:")
+print(f"  Delta P&L:  ${agg['delta_pnl']:,.2f}")
+print(f"  Vega P&L:   ${agg['vega_pnl']:,.2f}")
+print(f"  Total P&L:  ${agg['total_pnl']:,.2f}")
+print(f"  Total Delta: {agg['total_delta']:,.0f}")
+print(f"  Total Vega:  {agg['total_vega']:,.0f}")
+\end{lstlisting}
 
 \section{Calibration}
 
@@ -1392,7 +1676,273 @@ Provide \code{scripts/run\_sabr\_demo.py} that:
 \end{enumerate}
 
 %===============================================================================
-% CHAPTER 9: API REFERENCE
+% CHAPTER 10: INTERACTIVE DASHBOARD
+%===============================================================================
+\chapter{Interactive Dashboard}
+
+\section{Overview}
+
+The library includes a comprehensive Streamlit dashboard (\code{dashboard/interactive\_dashboard.py}) providing full visualization and interaction with all library functionality.
+
+\subsection{Launching the Dashboard}
+
+\begin{lstlisting}[language=bash]
+cd dashboard
+streamlit run interactive_dashboard.py
+
+# Or use the launcher scripts
+# Windows:
+launch_interactive.bat
+
+# Linux/Mac:
+bash launch_interactive.sh
+\end{lstlisting}
+
+\section{Dashboard Tabs}
+
+\subsection{Tab 1: Curves}
+
+\textbf{Features:}
+\begin{itemize}
+    \item Market snapshot with NSS and SABR parameters
+    \item OIS curve bootstrap from market quotes
+    \item Treasury NSS fitting with parameter display
+    \item Side-by-side curve comparison plots
+    \item Discount factor and forward rate visualization
+    \item SABR volatility surface display
+    \item Implied vol curves by bucket with smile visualization
+    \item ATM volatility surface heatmap
+    \item Bucket fallback diagnostics
+\end{itemize}
+
+\subsection{Tab 2: Pricing}
+
+\textbf{Bond Pricer:}
+\begin{itemize}
+    \item User-selectable day count convention (ACT/360, ACT/365, ACT/ACT, 30/360)
+    \item Maturity date, coupon rate, payment frequency inputs
+    \item Outputs: dirty price, clean price, accrued interest, DV01
+\end{itemize}
+
+\textbf{Swap Pricer:}
+\begin{itemize}
+    \item Maturity, fixed rate, notional, direction (PAY/RECEIVE)
+    \item Outputs: present value, DV01, par rate
+\end{itemize}
+
+\textbf{Futures Pricer:}
+\begin{itemize}
+    \item Expiry date, number of contracts
+    \item Outputs: theoretical price, implied rate, DV01
+\end{itemize}
+
+\textbf{Options (SABR):}
+\begin{itemize}
+    \item Swaption pricing with calibrated SABR surface
+    \item Expiry and tenor selection from available buckets
+    \item Strike offset slider (-200bp to +200bp)
+    \item Outputs: PV, forward swap rate, implied vol
+    \item SABR bucket diagnostics table
+    \item Full risk report with Greeks
+\end{itemize}
+
+\subsection{Tab 3: Risk Metrics}
+
+\textbf{Portfolio Risk Summary:}
+\begin{itemize}
+    \item Real bump-and-reprice DV01 computation
+    \item Coverage ratio warnings (linear vs full portfolio)
+    \item Failed trade diagnostics with expandable details
+    \item Total PV, total DV01, instrument count
+\end{itemize}
+
+\textbf{Key-Rate DV01 Analysis:}
+\begin{itemize}
+    \item Computed via localized tenor bumps (not equal-split)
+    \item Interactive bar chart visualization
+    \item Detail table with \$/bp units
+    \item Worst key-rate identification
+\end{itemize}
+
+\textbf{SABR Calibration Diagnostics:}
+\begin{itemize}
+    \item Parameters by bucket (sigma\_atm, nu, rho, beta)
+    \item Fit quality metrics (RMSE, max absolute error)
+    \item Fallback usage tracking
+\end{itemize}
+
+\textbf{Risk Limits:}
+\begin{itemize}
+    \item Real-time limit evaluation against DEFAULT\_LIMITS
+    \item Traffic light status (PASS/WARN/FAIL/NOT\_COMPUTED)
+    \item Conditional checks based on portfolio composition
+    \item Integration with VaR results from Tab 4
+\end{itemize}
+
+\subsection{Tab 4: VaR Analysis}
+
+\textbf{VaR Methods:}
+\begin{itemize}
+    \item Historical Simulation (lookback: 30-252 days)
+    \item Monte Carlo (1,000-20,000 paths)
+    \item Stressed VaR (COVID\_2020, RATE\_HIKE\_2022, TAPER\_2013, GFC\_2008)
+\end{itemize}
+
+\textbf{Option Inclusion Toggle:}
+\begin{itemize}
+    \item Full repricing (slower, accurate) vs linear-only (fast)
+    \item Coverage warnings when options excluded
+    \item Per-instrument failure tracking
+\end{itemize}
+
+\textbf{Outputs:}
+\begin{itemize}
+    \item VaR at 95\%, 99\%, 99.5\% confidence
+    \item Expected Shortfall (ES) at 97.5\%
+    \item Distribution histogram with VaR lines
+    \item Scenario P\&L breakdown table
+    \item Results persisted to session state for limit checks
+\end{itemize}
+
+\subsection{Tab 5: Scenarios}
+
+\textbf{Standard Curve Scenarios:}
+\begin{itemize}
+    \item Parallel shifts (+100bp, -100bp, +200bp, -200bp)
+    \item Steepeners and flatteners (2s10s, 5s30s)
+    \item Twists (butterfly, barbell)
+    \item Bear/bull scenarios
+\end{itemize}
+
+\textbf{Vol-Only Scenarios:}
+\begin{itemize}
+    \item Curve unchanged; SABR parameters shocked and portfolio repriced
+    \item Vol Shock +50\% (ATM volatility up across buckets)
+    \item Vol Shock -30\% (ATM volatility down across buckets)
+    \item $\nu$ Stress +100\% (vol-of-vol doubled)
+    \item $\rho$ Stress -0.5 (more negative skew)
+    \item Crisis Vol (combined vol + smile stress)
+    \item Reported as options P\&L vs linear P\&L (linear should be near zero)
+\end{itemize}
+
+\textbf{SABR Tail Stress:}
+\begin{itemize}
+    \item $\nu$ stress tested via multipliers (baseline, +50\%, +100\%)
+    \item $\rho$ stress tested via shifts (baseline, -0.25, -0.50)
+    \item Option PV changes are repriced; ES figures are reported as a tail-risk estimate derived from the $\nu$ stress
+\end{itemize}
+
+\textbf{Outputs:}
+\begin{itemize}
+    \item Scenario P\&L table sorted by loss
+    \item Bar chart visualization
+    \item Worst scenario identification
+    \item Combined curve+vol additivity check (curve P\&L + vol P\&L); full joint repricing is a future enhancement
+\end{itemize}
+
+\subsection{Tab 6: P\&L Attribution}
+
+\textbf{Linear Products Attribution (illustrative):}
+\begin{itemize}
+    \item Example decomposition into carry, rolldown, curve moves (parallel/non-parallel), convexity, and residual
+    \item Bar chart visualization and summary metrics (realized vs predicted vs residual)
+\end{itemize}
+
+\textbf{Options P\&L Attribution (Greeks-based):}
+\begin{itemize}
+    \item Greeks-based decomposition: Delta P\&L, Vega P\&L, Gamma P\&L, Vanna P\&L, Volga P\&L, Theta P\&L
+    \item Aggregated across option positions with portfolio Greeks summary
+    \item Uses actual SABR-calibrated Greeks (no hardcoding)
+\end{itemize}
+
+\textbf{Inputs:}
+\begin{itemize}
+    \item Rate move in bp (input: -100bp to +100bp)
+    \item Vol move in bp (input: -100bp to +100bp)
+    \item Days passed (input: 0-30 days, for theta)
+\end{itemize}
+
+\subsection{Tab 7: Liquidity Risk}
+
+\textbf{Liquidity-Adjusted VaR (LVaR):}
+\begin{itemize}
+    \item Bid-ask spread inputs by instrument type
+    \item Holding period scaling (square-root-of-time)
+    \item Simplified liquidation cost proxy based on portfolio DV01 and spreads
+    \item LVaR computed as a combined risk measure (VaR + liquidity adjustment), with breakdown visualization
+    \item Uplift calculation and visualization
+\end{itemize}
+
+\textbf{Liquidity Metrics:}
+\begin{itemize}
+    \item Reference spreads and estimated liquidation times by instrument type
+\end{itemize}
+
+\subsection{Tab 8: Data Explorer}
+
+\textbf{Features:}
+\begin{itemize}
+    \item Market quotes tables (OIS and Treasury)
+    \item Portfolio positions table with CSV download
+    \item Historical rates preview
+    \item Curve nodes inspection (dates, discount factors, zero rates)
+\end{itemize}
+
+\section{Dashboard Architecture}
+
+\subsection{Data Loading with Caching}
+
+\begin{lstlisting}
+@st.cache_data
+def load_ois_quotes():
+    return pd.read_csv('data/sample_quotes/ois_quotes.csv')
+
+@st.cache_data
+def load_positions():
+    return pd.read_csv('data/sample_book/positions.csv', comment='#')
+\end{lstlisting}
+
+\subsection{Market State Construction}
+
+\begin{lstlisting}
+def build_market_state(ois_curve, projection_curve, 
+                       valuation_date, vol_quotes_df):
+    curve_state = CurveState(
+        discount_curve=ois_curve,
+        projection_curve=projection_curve,
+        metadata={"valuation_date": str(valuation_date)},
+    )
+    
+    # Normalize vol quotes (requires curve_state)
+    normalized = normalize_vol_quotes(vol_quotes_df, curve_state)
+    
+    # Build SABR surface
+    sabr_surface = build_sabr_surface(normalized, curve_state, beta_policy=0.5)
+    
+    # Create market state
+    return MarketState(curve=curve_state, sabr_surface=sabr_surface, asof=str(valuation_date)), normalized
+\end{lstlisting}
+
+\subsection{Session State for Cross-Tab Communication}
+
+The dashboard uses \code{st.session\_state} to share results between tabs:
+
+\begin{lstlisting}
+# In VaR tab: store results
+st.session_state['var_results'] = {
+    'var_95': var_95,
+    'var_99': var_99,
+    'es_975': es_975
+}
+
+# In Risk Limits tab: retrieve
+var_state = st.session_state.get('var_results')
+if var_state:
+    metrics['var_95'] = var_state['var_95']
+\end{lstlisting}
+
+%===============================================================================
+% CHAPTER 11: API REFERENCE
 %===============================================================================
 \chapter{API Reference}
 
@@ -1736,6 +2286,110 @@ class ScenarioEngine:
     ) -> List[ScenarioResult]
 \end{lstlisting}
 
+\section{Portfolio Module}
+
+\subsection{Trade Builders}
+
+\begin{lstlisting}
+def build_bond_trade(pos: pd.Series, valuation_date: date) -> Dict[str, Any]:
+    """Build validated bond trade from a position row."""
+
+def build_swap_trade(pos: pd.Series, valuation_date: date) -> Dict[str, Any]:
+    """Build validated swap trade from a position row."""
+
+def build_swaption_trade(pos: pd.Series, valuation_date: date) -> Dict[str, Any]:
+    """Build validated swaption trade from a position row."""
+
+def build_caplet_trade(pos: pd.Series, valuation_date: date) -> Dict[str, Any]:
+    """Build validated caplet trade from a position row."""
+
+def build_trade_from_position(
+    pos: pd.Series,
+    valuation_date: date,
+    allow_legacy_options: bool = False
+) -> Dict[str, Any]:
+    """Dispatch to the correct builder based on instrument_type."""
+\end{lstlisting}
+
+\subsection{Portfolio Pricing}
+
+\begin{lstlisting}
+@dataclass
+class PortfolioPricingResult:
+    total_pv: float
+    successful_trades: List[Dict[str, Any]]
+    successful_pvs: List[float]
+    failed_trades: List[TradeFailure]
+    total_positions: int
+    
+    @property
+    def successful_count(self) -> int: ...
+    
+    @property
+    def failed_count(self) -> int: ...
+    
+    @property
+    def coverage_ratio(self) -> float: ...
+    
+    @property
+    def has_failures(self) -> bool: ...
+
+def price_portfolio_with_diagnostics(
+    positions_df: pd.DataFrame,
+    market_state: MarketState,
+    valuation_date: date,
+    include_options: bool = True,
+    allow_legacy_options: bool = False
+) -> PortfolioPricingResult:
+    """Price portfolio with comprehensive diagnostics."""
+\end{lstlisting}
+
+\subsection{Exception Types}
+
+\begin{lstlisting}
+class PositionValidationError(Exception):
+    """Base exception for position validation failures."""
+
+class MissingFieldError(PositionValidationError):
+    """Required field missing from position."""
+
+class InvalidOptionError(PositionValidationError):
+    """Option parameters are invalid or incomplete."""
+\end{lstlisting}
+
+\section{Market State Module}
+
+\subsection{MarketState Class}
+
+\begin{lstlisting}
+@dataclass
+class MarketState:
+    curve: CurveState
+    sabr_surface: Optional[SabrSurfaceState] = None
+    asof: Any = field(default_factory=datetime.utcnow)
+    
+    def get_sabr_params(
+        self,
+        expiry: str,
+        tenor: str,
+        allow_fallback: bool = True
+    ) -> Optional[SabrBucketParams]: ...
+\end{lstlisting}
+
+\subsection{CurveState Class}
+
+\begin{lstlisting}
+@dataclass
+class CurveState:
+    discount_curve: Curve
+    projection_curve: Optional[Curve] = None
+    metadata: Dict[str, Any] = field(default_factory=dict)
+    
+    def __post_init__(self):
+        if self.projection_curve is None:
+            self.projection_curve = self.discount_curve
+\end{lstlisting}
+
 \section{Volatility Module}
 
 \subsection{SabrParams Dataclass}
@@ -1839,6 +2493,69 @@ class SabrModel:
         params: SabrParams
     ) -> float:
         """Derivative of implied vol w.r.t. nu (for volga)."""
+\end{lstlisting}
+
+\subsection{SabrSurfaceState Class}
+
+\begin{lstlisting}
+@dataclass
+class SabrSurfaceState:
+    """SABR volatility surface with bucket-wise parameters.
+    
+    Attributes:
+        params_by_bucket: Dict mapping (expiry, tenor) to SabrBucketParams
+        missing_bucket_policy: "nearest" or "wildcard"
+        diagnostics: Calibration diagnostics per bucket
+    """
+    params_by_bucket: Dict[BucketKey, SabrBucketParams]
+    diagnostics: Dict[str, Any] = field(default_factory=dict)
+    convention: Dict[str, Any] = field(default_factory=dict)
+    asof: Optional[str] = None
+    missing_bucket_policy: str = "nearest"
+    
+    def get_bucket_params(
+        self,
+        expiry: str,
+        tenor: str,
+        allow_fallback: bool = True
+    ) -> Optional[SabrBucketParams]:
+        """Retrieve parameters for bucket.
+        
+        Lookup order:
+        1. Exact match (expiry, tenor)
+        2. Wildcard ("ALL", "ALL") if present
+        3. Nearest neighbor (if allow_fallback=True)
+        
+        The wildcard bucket is skipped during nearest-neighbor
+        distance calculations to avoid tenor parsing errors.
+        """
+    
+    def diagnostics_table(self) -> Dict[BucketKey, Dict[str, Any]]:
+        """Return diagnostics keyed by bucket for reporting."""
+\end{lstlisting}
+
+\subsection{SabrBucketParams Dataclass}
+
+\begin{lstlisting}
+@dataclass
+class SabrBucketParams:
+    """SABR parameters for a single (expiry, tenor) bucket."""
+    sigma_atm: float
+    beta: float
+    rho: float
+    nu: float
+    shift: float = 0.0
+    diagnostics: Dict[str, Any] = field(default_factory=dict)
+    
+    def to_sabr_params(self) -> SabrParams:
+        """Convert to SabrParams for risk engine."""
+        return SabrParams(
+            sigma_atm=self.sigma_atm,
+            beta=self.beta,
+            rho=self.rho,
+            nu=self.nu,
+            shift=self.shift
+        )
 \end{lstlisting}
 
 \subsection{SabrCalibrator Class}
@@ -2150,6 +2867,154 @@ class RiskReport:
 %===============================================================================
 % APPENDICES
 %===============================================================================
+\section{P\&L Attribution Module}
+
+\subsection{Options Greeks Attribution}
+
+\begin{lstlisting}
+@dataclass
+class OptionsGreeksAttribution:
+    """P&L attribution for a single option position."""
+    instrument_id: str
+    delta_pnl: float
+    vega_pnl: float
+    gamma_pnl: float
+    vanna_pnl: float
+    volga_pnl: float
+    theta_pnl: float
+    residual: float
+    total_pnl: float
+    delta: float
+    gamma: float
+    vega: float
+    vanna: float
+    volga: float
+    rate_move_bp: float
+    vol_move_bp: float
+    days_passed: int
+
+def compute_option_pnl_attribution(
+    positions_df: pd.DataFrame,
+    market_state: MarketState,
+    valuation_date: date,
+    rate_move_bp: float = 10.0,
+    vol_move_bp: float = 20.0,
+    days_passed: int = 1
+) -> List[OptionsGreeksAttribution]:
+    """Compute P&L attribution for option positions.
+    
+    Uses SABR-calibrated Greeks to decompose P&L into:
+    - Delta P&L: from rate moves
+    - Vega P&L: from vol moves
+    - Gamma P&L: convexity effect
+    - Vanna P&L: cross-effect (rate × vol)
+    - Volga P&L: vol convexity
+    - Theta P&L: time decay
+    """
+
+def aggregate_options_attribution(
+    attributions: List[OptionsGreeksAttribution]
+) -> Dict[str, float]:
+    """Aggregate options P&L attribution across positions.
+    
+    Returns:
+        Dict with:
+        - delta_pnl, vega_pnl, gamma_pnl, etc.
+        - total_pnl: sum of all components
+        - position_count: number of positions
+        - total_delta, total_gamma, total_vega: aggregated Greeks
+    """
+\end{lstlisting}
+
+\subsection{Curve vs Vol Attribution}
+
+\begin{lstlisting}
+def attribute_curve_vs_vol(
+    positions_df: pd.DataFrame,
+    market_state_t0: MarketState,
+    market_state_t1: MarketState,
+    valuation_date_t0: date,
+    valuation_date_t1: date
+) -> Dict[str, float]:
+    """Decompose P&L into curve and vol components.
+    
+    Returns:
+        Dict with:
+        - total_pnl: actual P&L
+        - curve_pnl: P&L from curve moves (vol held constant)
+        - vol_pnl: P&L from vol changes (curve held constant)
+        - theta_pnl: time decay
+        - residual: unexplained
+    """
+\end{lstlisting}
+
+\section{Risk Reporting Module}
+
+\subsection{Coverage Metrics}
+
+\begin{lstlisting}
+@dataclass
+class VaRCoverageInfo:
+    """Coverage information for VaR calculation."""
+    total_instruments: int
+    priced_instruments: int
+    coverage_ratio: float
+    is_linear_only: bool
+    excluded_types: List[str]
+    warnings: List[str]
+    
+    def has_warnings(self) -> bool:
+        return len(self.warnings) > 0
+
+def build_var_portfolio_pricer(
+    positions_df: pd.DataFrame,
+    valuation_date: date,
+    market_state: MarketState,
+    include_options: bool = True
+) -> Tuple[Callable[[Curve], float], VaRCoverageInfo]:
+    """Build portfolio pricer with coverage diagnostics.
+    
+    Returns:
+        Tuple of (pricer_func, coverage_info)
+        - pricer_func: Callable that takes a curve and returns PV
+        - coverage_info: Diagnostics about what was included/excluded
+    """
+\end{lstlisting}
+
+\subsection{Curve Risk Metrics}
+
+\begin{lstlisting}
+@dataclass
+class CurveRiskMetrics:
+    """Comprehensive curve risk metrics."""
+    base_pv: float
+    total_dv01: float
+    keyrate_dv01: Dict[str, float]
+    worst_keyrate_dv01: float
+    instrument_coverage: int
+    total_instruments: int
+    coverage_ratio: float
+    excluded_types: List[str]
+    warnings: List[str]
+    failed_trades: List[TradeFailure]
+    
+    @property
+    def has_failures(self) -> bool:
+        return len(self.failed_trades) > 0
+    
+    def to_dataframe(self) -> pd.DataFrame:
+        """Convert key-rate DV01 to DataFrame."""
+
+def compute_curve_risk_metrics(
+    positions_df: pd.DataFrame,
+    market_state: MarketState,
+    valuation_date: date,
+    keyrate_tenors: List[str],
+    bump_bp: float = 1.0
+) -> CurveRiskMetrics:
+    """Compute portfolio risk using real bump-and-reprice."""
+\end{lstlisting}
+
 \appendix
 
 \chapter{Mathematical Derivations}
@@ -2225,31 +3090,41 @@ Taking the derivative:
     \item[Beta ($\beta$)] SABR CEV exponent; $\beta=0$ is normal, $\beta=1$ is lognormal.
     \item[Black'76 Model] Option pricing model for forwards/futures assuming lognormal dynamics.
     \item[Bootstrap] Sequential curve construction method solving for discount factors one at a time.
+    \item[Bucket] A (expiry, tenor) combination in SABR surface calibration.
     \item[Caplet] A call option on a forward interest rate for a single period.
     \item[Convexity] Second derivative of price with respect to yield.
+    \item[Coverage Ratio] Fraction of portfolio successfully priced (useful for VaR diagnostics).
+    \item[CurveState] Container for discount and projection curves in MarketState.
+    \item[Delta (SABR)] Model-consistent delta including smile dynamics: $\Delta_{\text{SABR}} = \Delta_{\text{base}} + \mathcal{V} \cdot \partial\sigma/\partial F$.
     \item[Discount Factor] Present value of \$1 to be received at a future date.
     \item[DV01] Dollar Value of 01 basis point - price change for 1bp parallel shift.
     \item[Expected Shortfall (ES)] Average loss given that VaR is exceeded; also called CVaR.
     \item[Forward Rate] Interest rate agreed today for a future period.
     \item[Hagan Approximation] Analytical formula for SABR implied volatility.
     \item[Key-Rate Duration] Sensitivity to a shift at a specific curve tenor.
+    \item[LVaR] Liquidity-adjusted VaR including bid-ask spread costs.
+    \item[MarketState] Unified container for curves, SABR surface, and valuation date.
     \item[Modified Duration] Percentage price sensitivity to yield changes.
     \item[Nelson-Siegel-Svensson (NSS)] Parametric yield curve model with 6 parameters.
     \item[Nu ($\nu$)] SABR volatility-of-volatility parameter.
     \item[OIS] Overnight Index Swap - swap exchanging fixed rate for overnight rate.
     \item[P\&L Attribution] Decomposition of profit/loss into explanatory components.
     \item[Par Rate] Swap rate that makes the swap have zero initial value.
+    \item[Portfolio Builder] Validated trade construction function with error diagnostics.
     \item[Rho ($\rho$)] SABR correlation parameter between forward and volatility.
     \item[Roll-down] P\&L from the position aging on an unchanged curve.
     \item[SABR] Stochastic Alpha Beta Rho model for volatility smile dynamics.
+    \item[SABR Surface] Bucketed collection of SABR parameters by (expiry, tenor).
     \item[Shifted SABR] SABR variant allowing negative forwards via a shift parameter.
     \item[Sideways] Component of smile dynamics from moneyness change at fixed ATM vol.
+    \item[Sigma\_ATM ($\sigma_{\text{ATM}}$)] At-the-money implied volatility (calibration input).
     \item[Smile] The variation of implied volatility across strikes.
     \item[Swaption] An option to enter into an interest rate swap.
-    \item[Vanna] Sensitivity of option value to correlation ($\partial V/\partial\rho$).
+    \item[Vanna] Sensitivity of option value to correlation ($\partial V/\partial\rho$) or cross-gamma.
     \item[VaR] Value at Risk - loss exceeded with specified probability.
     \item[Vega] Sensitivity of option value to volatility.
-    \item[Volga] Sensitivity of option value to vol-of-vol ($\partial V/\partial\nu$).
+    \item[Volga] Sensitivity of option value to vol-of-vol ($\partial V/\partial\nu$) or vol convexity.
+    \item[Wildcard Bucket] The ("ALL", "ALL") bucket providing universal fallback for missing SABR calibrations.
     \item[Zero Rate] Yield on a zero-coupon bond of given maturity.
 \end{description}
 
@@ -2279,6 +3154,12 @@ Taking the derivative:
     \item Bartlett, B. (2006). ``Hedging Under SABR Model.'' \textit{Wilmott Magazine}, July, 2-4.
     
     \item West, G. (2005). ``Calibration of the SABR Model in Illiquid Markets.'' \textit{Applied Mathematical Finance}, 12(4), 371-385.
+    
+    \item Streamlit Inc. (2024). \textit{Streamlit Documentation}. https://docs.streamlit.io
+    
+    \item Plotly Technologies Inc. (2024). \textit{Plotly Python Graphing Library}. https://plotly.com/python/
+    
+    \item \textit{Rates Risk Library Repository}. https://github.com/7josh7/rates\_risk\_lib
 \end{enumerate}
 
 \end{document}

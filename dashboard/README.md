@@ -80,6 +80,8 @@ All 12 positions in `data/sample_book/positions.csv` price successfully with pro
   - **Run Custom Scenario** button for full portfolio repricing
   - P&L attribution breakdown (curve vs vol effects)
   - Coverage metrics (100% position support)
+- Vol-only scenarios (SABR shocks) computed via portfolio repricing (requires `../data/vol_quotes.csv`)
+- Combined curve+vol “verification” is an additive approximation (curve P&L + vol P&L), not a full joint repricing
 - Detailed P&L breakdown by scenario
 - **100% instrument coverage** (bonds, swaps, futures, swaptions, caplets)
 
@@ -95,9 +97,10 @@ All 12 positions in `data/sample_book/positions.csv` price successfully with pro
 - Visual breakdown charts
 - Predicted vs realized P&L comparison
 - Separate attribution for curve and volatility effects
+  - Note: linear “daily attribution” is an illustrative decomposition; options attribution is Greeks-based and uses user-specified Δrate/Δvol inputs
 
 **💧 Liquidity Risk Tab**
-- Liquidity-adjusted VaR (LVaR) calculations
+- Liquidity-adjusted VaR (LVaR) what-if calculator (simplified)
 - Bid/ask spread impacts
 - Holding period scaling
 - Position size impacts
@@ -135,6 +138,7 @@ pip install shiny shinywidgets plotly streamlit pandas numpy
 Both dashboards load data from:
 - `../data/sample_quotes/` - Market data (OIS quotes, Treasury yields, historical rates)
 - `../data/sample_book/` - Portfolio positions
+- `../data/vol_quotes.csv` - Optional SABR vol quotes (enables SABR surface, vol-only scenarios, and SABR tail analysis)
 - `../output/` - Generated risk reports (for the real-time dashboard)
 
 To generate the required output files, run:
@@ -229,12 +233,11 @@ The interactive dashboard covers **all major library components**:
 ## Future Enhancements
 
 Potential additions:
-- SABR volatility surface visualization (when vol data is available)
-- Options Greeks calculator
-- Real-time data feeds integration
-- Multi-portfolio comparison
-- Historical P&L tracking
-- Custom reporting templates
+- Full joint curve+vol scenarios (true combined repricing and cross-gamma residual)
+- Ingest realized daily P&L time series for attribution backtesting
+- Integrate instrument-level liquidity inputs into `LiquidityEngine` (instead of simplified inputs)
+- Real-time data feeds / market data connectors
+- Multi-portfolio comparison and reporting templates
 
 ## Support
 
