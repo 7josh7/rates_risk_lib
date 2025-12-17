@@ -30,6 +30,15 @@ from .limits import (
     evaluate_limits,
     limits_to_table,
 )
+from .reporting import (
+    compute_limit_metrics,
+    compute_curve_risk_metrics,
+    CurveRiskMetrics,
+    DEFAULT_KEYRATE_TENORS,
+    EXTENDED_KEYRATE_TENORS,
+    build_var_portfolio_pricer,
+    VaRCoverageInfo,
+)
 
 __all__ = [
     "BumpEngine",
@@ -46,4 +55,11 @@ __all__ = [
     "DEFAULT_LIMITS",
     "evaluate_limits",
     "limits_to_table",
+    "compute_limit_metrics",
+    "compute_curve_risk_metrics",
+    "CurveRiskMetrics",
+    "DEFAULT_KEYRATE_TENORS",
+    "EXTENDED_KEYRATE_TENORS",
+    "build_var_portfolio_pricer",
+    "VaRCoverageInfo",
 ]

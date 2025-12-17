@@ -12,7 +12,7 @@ Scenarios are defined as rate changes at each key tenor.
 
 from dataclasses import dataclass, field
 from datetime import date
-from typing import Callable, Dict, List, Optional, Any
+from typing import Callable, Dict, List, Optional, Any, Tuple
 
 import numpy as np
 import pandas as pd
@@ -541,6 +541,242 @@ def extract_market_state_params(market_state: MarketState) -> Dict[str, Any]:
     return result
 
 
+# ==============================================================================
+# Portfolio Scenario Repricing Functions
+# ==============================================================================
+
+@dataclass
+class PortfolioScenarioResult:
+    """
+    Result of running a scenario on a portfolio with full repricing.
+    
+    Attributes:
+        scenario_name: Name of the scenario
+        description: Scenario description
+        base_pv: Portfolio PV before scenario
+        scenario_pv: Portfolio PV after scenario
+        pnl: Scenario P&L (scenario_pv - base_pv)
+        curve_bump_profile: The curve bumps applied
+        instruments_priced: Number of instruments successfully priced
+        computation_method: Description of how computed
+    """
+    scenario_name: str
+    description: str
+    base_pv: float
+    scenario_pv: float
+    pnl: float
+    curve_bump_profile: Dict[str, float]
+    instruments_priced: int = 0
+    computation_method: str = "bump-and-reprice"
+    
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "scenario_name": self.scenario_name,
+            "description": self.description,
+            "base_pv": self.base_pv,
+            "scenario_pv": self.scenario_pv,
+            "pnl": self.pnl,
+            "curve_bump_profile": self.curve_bump_profile,
+            "instruments_priced": self.instruments_priced,
+            "computation_method": self.computation_method,
+        }
+
+
+def _build_trade_from_position(pos: pd.Series, valuation_date: date) -> Optional[Dict[str, Any]]:
+    """Build a trade dict from a position row."""
+    inst = str(pos.get("instrument_type", "")).upper()
+    notional = float(abs(pos.get("notional", 0.0)))
+    direction = str(pos.get("direction", "")).upper()
+    sign = -1.0 if direction in {"SHORT", "PAY_FIXED", "PAY"} else 1.0
+    
+    if inst in {"BOND", "UST"}:
+        maturity = pos.get("maturity_date")
+        if maturity is not None:
+            maturity = pd.to_datetime(maturity).date() if not isinstance(maturity, date) else maturity
+        else:
+            return None
+        return {
+            "instrument_type": inst,
+            "settlement": valuation_date,
+            "maturity": maturity,
+            "coupon": float(pos.get("coupon", 0.0)),
+            "notional": notional * sign,
+            "frequency": int(pos.get("frequency", 2)),
+        }
+    
+    if inst in {"SWAP", "IRS"}:
+        maturity = pos.get("maturity_date")
+        if maturity is not None:
+            maturity = pd.to_datetime(maturity).date() if not isinstance(maturity, date) else maturity
+        else:
+            return None
+        pay_receive = "PAY" if "PAY" in direction else "RECEIVE"
+        return {
+            "instrument_type": "SWAP",
+            "effective": valuation_date,
+            "maturity": maturity,
+            "notional": notional,
+            "fixed_rate": float(pos.get("coupon", 0.0)),
+            "pay_receive": pay_receive,
+        }
+    
+    if inst in {"SWAPTION", "CAPLET", "CAP", "CAPFLOOR"}:
+        maturity = pos.get("maturity_date")
+        if maturity is not None:
+            maturity = pd.to_datetime(maturity).date() if not isinstance(maturity, date) else maturity
+        expiry_tenor = pos.get("expiry_tenor") or pos.get("option_expiry")
+        swap_tenor = pos.get("swap_tenor") or pos.get("tenor")
+        if not expiry_tenor and maturity:
+            years = max(0.25, round((maturity - valuation_date).days / 365.25))
+            expiry_tenor = f"{int(years)}Y"
+        if not swap_tenor:
+            swap_tenor = "5Y"
+        return {
+            "instrument_type": "SWAPTION",
+            "expiry_tenor": str(expiry_tenor),
+            "swap_tenor": str(swap_tenor),
+            "strike": pos.get("strike", "ATM") or "ATM",
+            "payer_receiver": "PAYER" if direction in {"LONG", "BUY"} else "RECEIVER",
+            "notional": notional * sign,
+            "vol_type": "NORMAL",
+        }
+    
+    return None
+
+
+def _price_portfolio(
+    trades: List[Dict[str, Any]],
+    market_state: MarketState,
+) -> Tuple[float, int]:
+    """Price a list of trades under a given market state. Returns (total_pv, count_priced)."""
+    from ..pricers.dispatcher import price_trade
+    
+    total_pv = 0.0
+    count = 0
+    for trade in trades:
+        try:
+            result = price_trade(trade, market_state)
+            total_pv += result.pv
+            count += 1
+        except Exception:
+            pass
+    return total_pv, count
+
+
+def run_scenario_set(
+    positions_df: pd.DataFrame,
+    market_state: MarketState,
+    valuation_date: date,
+    scenarios: Optional[Dict[str, Scenario]] = None,
+) -> List[PortfolioScenarioResult]:
+    """
+    Run a set of scenarios on a portfolio using full bump-and-reprice.
+    
+    This function replaces hard-coded scenario P&Ls with actual repricing
+    under shocked curves.
+    
+    Args:
+        positions_df: DataFrame with position details
+        market_state: Current market state (curves + vol surface)
+        valuation_date: Valuation date for pricing
+        scenarios: Dict of scenario name -> Scenario. Uses STANDARD_SCENARIOS if None.
+    
+    Returns:
+        List of PortfolioScenarioResult objects, one per scenario.
+    """
+    scenarios = scenarios or STANDARD_SCENARIOS
+    
+    # Build trades from positions
+    trades = []
+    for _, pos in positions_df.iterrows():
+        trade = _build_trade_from_position(pos, valuation_date)
+        if trade:
+            trades.append(trade)
+    
+    if not trades:
+        return []
+    
+    # Compute base PV
+    base_pv, base_count = _price_portfolio(trades, market_state)
+    
+    results = []
+    
+    for scenario_key, scenario in scenarios.items():
+        # Apply scenario bumps to create shocked market state
+        shocked_market = apply_market_scenario(
+            market_state,
+            curve_bump_profile=scenario.bump_profile,
+            sabr_shocks=None,  # Curve-only scenarios for now
+        )
+        
+        # Price portfolio under shocked curves
+        scenario_pv, scenario_count = _price_portfolio(trades, shocked_market)
+        
+        pnl = scenario_pv - base_pv
+        
+        results.append(PortfolioScenarioResult(
+            scenario_name=scenario.name,
+            description=scenario.description,
+            base_pv=base_pv,
+            scenario_pv=scenario_pv,
+            pnl=pnl,
+            curve_bump_profile=scenario.bump_profile,
+            instruments_priced=scenario_count,
+            computation_method="Computed from repricing under shocked curves",
+        ))
+    
+    return results
+
+
+def run_single_scenario(
+    positions_df: pd.DataFrame,
+    market_state: MarketState,
+    valuation_date: date,
+    scenario: Scenario,
+) -> PortfolioScenarioResult:
+    """
+    Run a single scenario on a portfolio using full bump-and-reprice.
+    
+    Args:
+        positions_df: DataFrame with position details
+        market_state: Current market state
+        valuation_date: Valuation date
+        scenario: The scenario to run
+    
+    Returns:
+        PortfolioScenarioResult
+    """
+    results = run_scenario_set(
+        positions_df=positions_df,
+        market_state=market_state,
+        valuation_date=valuation_date,
+        scenarios={scenario.name: scenario},
+    )
+    return results[0] if results else PortfolioScenarioResult(
+        scenario_name=scenario.name,
+        description=scenario.description,
+        base_pv=0.0,
+        scenario_pv=0.0,
+        pnl=0.0,
+        curve_bump_profile=scenario.bump_profile,
+        instruments_priced=0,
+        computation_method="No instruments to price",
+    )
+
+
+def scenarios_to_dataframe(results: List[PortfolioScenarioResult]) -> pd.DataFrame:
+    """Convert scenario results to DataFrame for display."""
+    if not results:
+        return pd.DataFrame(columns=["Scenario", "P&L", "Description"])
+    
+    return pd.DataFrame({
+        "Scenario": [r.scenario_name for r in results],
+        "P&L": [r.pnl for r in results],
+        "Description": [r.description for r in results],
+        "Instruments Priced": [r.instruments_priced for r in results],
+    })
+
+
 __all__ = [
     "Scenario",
     "ScenarioResult",
@@ -552,4 +788,8 @@ __all__ = [
     "extract_market_state_params",
     "SabrShock",
     "SABR_STRESS_REGIMES",
+    "PortfolioScenarioResult",
+    "run_scenario_set",
+    "run_single_scenario",
+    "scenarios_to_dataframe",
 ]

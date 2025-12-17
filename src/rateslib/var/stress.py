@@ -86,7 +86,7 @@ class StressedVaR:
     
     # Predefined stress periods
     STRESS_PERIODS = {
-        "COVID_2020": (date(2020, 2, 1), date(2020, 6, 30)),
+        "COVID_2020": (date(2020, 2, 1), date(2020, 12, 31)),
         "RATE_HIKE_2022": (date(2022, 1, 1), date(2022, 12, 31)),
         "TAPER_2013": (date(2013, 5, 1), date(2013, 9, 30)),
         "GFC_2008": (date(2008, 9, 1), date(2009, 3, 31)),
@@ -123,7 +123,11 @@ class StressedVaR:
     def _filter_stress_period(self) -> None:
         """Filter historical data to stress period."""
         df = self.full_historical_data.copy()
-        
+        self.used_fallback_full_history = False
+        if "rate" not in df.columns and "date" in df.columns:
+            value_cols = [c for c in df.columns if c.lower() != "date"]
+            df = df.melt(id_vars="date", value_vars=value_cols, var_name="tenor", value_name="rate")
+
         if 'date' in df.columns:
             df['date'] = pd.to_datetime(df['date'])
             mask = (df['date'] >= pd.Timestamp(self.stress_period_start)) & \
@@ -135,6 +139,11 @@ class StressedVaR:
             mask = (df.index >= pd.Timestamp(self.stress_period_start)) & \
                    (df.index <= pd.Timestamp(self.stress_period_end))
             self.stress_data = df[mask].copy()
+
+        # If no data in the selected stress window, fall back to full history
+        if self.stress_data.empty:
+            self.stress_data = df.copy()
+            self.used_fallback_full_history = True
     
     def compute_stressed_var(self) -> StressResult:
         """
@@ -158,6 +167,9 @@ class StressedVaR:
             self.pricer_func
         )
         regular_result = regular_hs.run_simulation()
+
+        if stressed_result.num_scenarios == 0:
+            raise ValueError("No scenarios in selected stress period. Choose a period with available data.")
         
         return StressResult(
             stressed_var_95=stressed_result.var_95,

@@ -41,6 +41,7 @@ from .risk import (
     DEFAULT_LIMITS,
     evaluate_limits,
     limits_to_table,
+    compute_limit_metrics,
 )
 
 # VaR
@@ -132,6 +133,7 @@ __all__ = [
     "DEFAULT_LIMITS",
     "evaluate_limits",
     "limits_to_table",
+    "compute_limit_metrics",
     # VaR
     "HistoricalSimulation",
     "MonteCarloVaR",

@@ -49,11 +49,24 @@ from rateslib import (
     MarketState, CurveState, normalize_vol_quotes, build_sabr_surface,
     price_trade, risk_trade,
     DEFAULT_LIMITS, evaluate_limits, limits_to_table,
+    compute_limit_metrics,
     # Conventions
     DayCount, Conventions,
     DateUtils,
 )
 from rateslib.curves.bootstrap import bootstrap_from_quotes
+# New engine-layer imports for real risk computation
+from rateslib.risk.reporting import (
+    compute_curve_risk_metrics,
+    CurveRiskMetrics,
+    build_var_portfolio_pricer,
+    VaRCoverageInfo,
+)
+from rateslib.var.scenarios import (
+    run_scenario_set,
+    scenarios_to_dataframe,
+    PortfolioScenarioResult,
+)
 
 # =============================================================================
 # Constants
@@ -979,56 +992,56 @@ def main():
             for msg in fallback_messages:
                 st.info(msg)
         
-        # Portfolio-level metrics
+        # Portfolio-level metrics using real bump-and-reprice engine
         st.subheader("Portfolio Risk Summary")
+        st.markdown("*Computed using bump-and-reprice methodology*")
         
-        # Calculate portfolio metrics
-        total_pv = 0
-        total_dv01 = 0
-        position_risks = []
+        # Compute real DV01 and key-rate DV01 using engine-layer function
+        with st.spinner("Computing portfolio risk metrics via bump-and-reprice..."):
+            curve_risk = compute_curve_risk_metrics(
+                positions_df=positions_df,
+                market_state=market_state,
+                valuation_date=valuation_date,
+                keyrate_tenors=['2Y', '5Y', '10Y', '30Y'],
+                bump_bp=1.0,
+            )
         
-        for _, pos in positions_df.iterrows():
-            # Simplified risk calculation for demo
-            # In practice, use actual pricers
-            notional = pos['notional']
-            if pos['instrument_type'] == 'UST':
-                # Approximate DV01 for bond
-                maturity_date = pd.to_datetime(pos['maturity_date']).date()
-                years = (maturity_date - valuation_date).days / 365.25
-                approx_dv01 = notional / 100 * years * 0.01 * 0.01  # Simplified
-                
-                if pos['direction'] == 'SHORT':
-                    approx_dv01 = -approx_dv01
-                
-                total_dv01 += approx_dv01
-                position_risks.append({
-                    'position_id': pos['position_id'],
-                    'instrument': pos['instrument_id'],
-                    'dv01': approx_dv01
-                })
+        total_pv = curve_risk.base_pv
+        total_dv01 = curve_risk.total_dv01
+        worst_keyrate = curve_risk.worst_keyrate_dv01
         
         col1, col2, col3, col4 = st.columns(4)
         col1.metric("Total PV", f"${total_pv:,.0f}")
-        col2.metric("Total DV01", f"${total_dv01:,.2f}")
+        col2.metric("Total DV01 ($ per 1bp)", f"${total_dv01:,.2f}")
         col3.metric("Number of Positions", len(positions_df))
         col4.metric("Curve Date", valuation_date.strftime("%Y-%m-%d"))
         
-        # Key Rate DV01
-        st.subheader("Key Rate DV01 Analysis")
+        # Display coverage info
+        if curve_risk.excluded_types:
+            st.warning(f"Excluded instrument types: {', '.join(curve_risk.excluded_types)}")
+        st.caption(f"Instruments priced: {curve_risk.instrument_coverage}/{curve_risk.total_instruments}")
         
-        # For demo, create synthetic key rate data
-        kr_tenors = ['2Y', '5Y', '10Y', '30Y']
-        kr_dv01s = [total_dv01 / 4] * 4  # Simplified equal distribution
-        kr_df = pd.DataFrame({'Tenor': kr_tenors, 'DV01': kr_dv01s})
+        # Key Rate DV01 using real computed values
+        st.subheader("Key Rate DV01 Analysis")
+        st.markdown("*Key-rate DV01 computed via localized tenor bumps (not equal-split)*")
+        
+        kr_df = curve_risk.to_dataframe()
         
         st.plotly_chart(plot_key_rate_ladder(kr_df), width="stretch")
-        worst_keyrate = max(abs(v) for v in kr_dv01s) if kr_dv01s else 0.0
+        
+        # Show detail table
+        with st.expander("Key-Rate DV01 Detail"):
+            st.dataframe(
+                kr_df.style.format({'DV01': '${:,.2f}'}),
+                width="stretch"
+            )
+            st.caption("Unit: $ per 1bp bump at each tenor")
         
         # Convexity analysis
         st.subheader("Convexity Analysis")
         col1, col2 = st.columns(2)
         with col1:
-            st.metric("Portfolio Convexity", "218")
+            st.metric("Worst Key-Rate DV01", f"${worst_keyrate:,.2f}")
         with col2:
             st.info("Convexity measures the curvature of price-yield relationship")
 
@@ -1049,24 +1062,42 @@ def main():
 
         # Limit checks
         st.subheader("Risk Limits")
-        sabr_rmse_max = None
-        sabr_bucket_count = 0
-        if market_state.sabr_surface and getattr(market_state.sabr_surface, "params_by_bucket", None):
-            sabr_bucket_count = len(market_state.sabr_surface.params_by_bucket)
-            rmses = []
-            for params in market_state.sabr_surface.params_by_bucket.values():
-                diag = getattr(params, "diagnostics", {}) or {}
-                if "rmse" in diag:
-                    rmses.append(diag["rmse"])
-            if rmses:
-                sabr_rmse_max = max(rmses)
-        metrics_for_limits = {
-            "total_dv01": abs(total_dv01),
-            "worst_keyrate_dv01": worst_keyrate,
-            "sabr_rmse_max": sabr_rmse_max,
-            "sabr_bucket_count": sabr_bucket_count,
-        }
-        limit_results = evaluate_limits(metrics_for_limits, DEFAULT_LIMITS)
+        metrics_for_limits, meta = compute_limit_metrics(
+            market_state=market_state,
+            positions_df=positions_df,
+            valuation_date=valuation_date,
+        )
+        # Inject persisted VaR results from session state if available
+        var_state = st.session_state.get("var_results")
+        if var_state:
+            metrics_for_limits.update({k: var_state.get(k) for k in ["var_95", "var_99", "es_975", "scenario_worst", "lvar_uplift"] if k in var_state})
+            meta["has_var_results"] = True
+            if "scenario_worst" in var_state:
+                meta["has_scenario_results"] = True
+            if "lvar_uplift" in var_state:
+                meta["has_liquidity_results"] = True
+        # Preserve already computed DV01 from summary if available
+        if metrics_for_limits.get("total_dv01") == 0.0:
+            metrics_for_limits["total_dv01"] = abs(total_dv01)
+        if metrics_for_limits.get("worst_keyrate_dv01") is None:
+            metrics_for_limits["worst_keyrate_dv01"] = worst_keyrate
+        status_overrides = {}
+        if not meta.get("has_option_positions", False):
+            for key in ["option_delta", "option_gamma", "sabr_vega_atm", "sabr_vega_nu", "sabr_vega_rho"]:
+                status_overrides[key] = "Not Applicable"
+        elif not meta.get("computed_option_greeks", False):
+            for key in ["option_delta", "option_gamma", "sabr_vega_atm", "sabr_vega_nu", "sabr_vega_rho"]:
+                status_overrides[key] = "Not Computed"
+        if not meta.get("has_var_results", False):
+            for key in ["var_95", "var_99", "es_975"]:
+                status_overrides[key] = "Not Computed"
+        if not meta.get("has_scenario_results", False):
+            status_overrides["scenario_worst"] = "Not Computed"
+        if not meta.get("has_liquidity_results", False):
+            status_overrides["lvar_uplift"] = "Not Computed"
+        if metrics_for_limits.get("worst_keyrate_dv01") is None and not meta.get("has_keyrate_results", False):
+            status_overrides["worst_keyrate_dv01"] = "Not Computed"
+        limit_results = evaluate_limits(metrics_for_limits, DEFAULT_LIMITS, status_overrides=status_overrides)
         table = render_limit_table(limit_results)
         if table is not None:
             st.dataframe(table, width="stretch")
@@ -1083,98 +1114,154 @@ def main():
             for msg in fallback_messages:
                 st.info(msg)
         
-        var_method = st.selectbox("VaR Method", 
-                                  ["Historical Simulation", "Monte Carlo", "Stressed VaR"])
-        
-        confidence_level = st.slider("Confidence Level (%)", 90, 99, 95)
+        var_method = st.selectbox("VaR Method", ["Historical Simulation", "Monte Carlo", "Stressed VaR"], index=0)
         lookback_days = st.slider("Lookback Period (days)", 30, 252, 63)
+        num_paths = st.slider("MC Paths", 1000, 20000, 1000, step=1000)
+        stress_period = st.selectbox(
+            "Stress Period",
+            ["COVID_2020", "RATE_HIKE_2022", "TAPER_2013", "GFC_2008", "FULL_2020_2022"],
+            index=0,
+        )
+        
+        # Option to include/exclude options in VaR
+        include_options_var = st.checkbox(
+            "Include options in VaR (slower, more accurate)",
+            value=True,
+            help="When checked, options will be repriced under each scenario. When unchecked, VaR is linear-only."
+        )
+
+        # Build portfolio pricer using engine-layer function
+        portfolio_pv, var_coverage = build_var_portfolio_pricer(
+            positions_df=positions_df,
+            valuation_date=valuation_date,
+            market_state=market_state,
+            include_options=include_options_var,
+        )
+        
+        # Display VaR coverage warnings prominently
+        if var_coverage.warnings:
+            for warning in var_coverage.warnings:
+                st.warning(warning)
+        
+        if var_coverage.is_linear_only:
+            st.error(
+                "⚠️ **VaR/ES excludes options (linear-only)**. "
+                f"Excluded PV: ${var_coverage.excluded_pv:,.0f}, "
+                f"Coverage ratio: {var_coverage.coverage_ratio:.1%}"
+            )
+        else:
+            st.success(
+                f"✓ VaR includes all {var_coverage.included_instruments} instruments "
+                f"(Coverage: {var_coverage.coverage_ratio:.1%})"
+            )
+
+        # Load historical rate data and convert to long-form
+        hist_rates = load_historical_rates()
+        if "tenor" not in hist_rates.columns or "rate" not in hist_rates.columns:
+            value_cols = [c for c in hist_rates.columns if c.lower() != "date"]
+            hist_rates = hist_rates.melt(id_vars="date", value_vars=value_cols, var_name="tenor", value_name="rate")
+
+        var_results_payload = {}
+        var_label_suffix = " (linear-only)" if var_coverage.is_linear_only else ""
         
         if var_method == "Historical Simulation":
-            st.subheader("Historical Simulation VaR")
-            
-            # Generate synthetic P&L distribution for demo
-            np.random.seed(RANDOM_SEED)
-            historical_pnl = np.random.normal(0, 5000, lookback_days)
-            
-            var_95 = np.percentile(-historical_pnl, 95)
-            var_99 = np.percentile(-historical_pnl, 99)
-            es_95 = -np.mean(historical_pnl[historical_pnl <= -var_95])
-            es_99 = -np.mean(historical_pnl[historical_pnl <= -var_99])
-            
+            hs_engine = HistoricalSimulation(
+                base_curve=ois_curve,
+                historical_data=hist_rates,
+                pricer_func=portfolio_pv,
+            )
+            try:
+                var_result = hs_engine.run_simulation(lookback_days=lookback_days)
+            except Exception as exc:
+                st.warning(f"Historical VaR failed: {exc}")
+                var_result = None
             col1, col2, col3, col4 = st.columns(4)
-            col1.metric("VaR 95%", f"${var_95:,.0f}")
-            col2.metric("VaR 99%", f"${var_99:,.0f}")
-            col3.metric("ES 95%", f"${es_95:,.0f}")
-            col4.metric("ES 99%", f"${es_99:,.0f}")
-            
-            st.plotly_chart(plot_var_distribution(historical_pnl, var_95, var_99),
-                           width="stretch")
-            
-            metrics_for_limits = {
-                "var_95": var_95,
-                "var_99": var_99,
-                "es_975": es_99 if 'es_99' in locals() else es_95,
-            }
-            limit_results = evaluate_limits(metrics_for_limits, DEFAULT_LIMITS)
-            table = render_limit_table(limit_results)
-            if table is not None:
-                st.subheader("VaR Limits")
-                st.dataframe(table, width="stretch")
-        
+            if var_result:
+                col1.metric(f"VaR 95%{var_label_suffix}", f"${var_result.var_95:,.0f}")
+                col2.metric(f"VaR 99%{var_label_suffix}", f"${var_result.var_99:,.0f}")
+                col3.metric(f"ES 95%{var_label_suffix}", f"${var_result.es_95:,.0f}")
+                col4.metric(f"ES 99%{var_label_suffix}", f"${var_result.es_99:,.0f}")
+                st.plotly_chart(
+                    plot_var_distribution(var_result.pnl_distribution, var_result.var_95, var_result.var_99),
+                    width="stretch",
+                )
+                var_results_payload = {
+                    "var_95": var_result.var_95,
+                    "var_99": var_result.var_99,
+                    "es_975": var_result.es_99,
+                    "scenario_worst": var_result.worst_loss,
+                    "is_linear_only": var_coverage.is_linear_only,
+                }
         elif var_method == "Monte Carlo":
-            st.subheader("Monte Carlo VaR")
-            
-            num_scenarios = st.slider("Number of Scenarios", 1000, 50000, 10000, step=1000)
-            
-            # Generate Monte Carlo scenarios
-            np.random.seed(RANDOM_SEED)
-            mc_pnl = np.random.normal(0, 5000, num_scenarios)
-            
-            var_95 = np.percentile(-mc_pnl, 95)
-            var_99 = np.percentile(-mc_pnl, 99)
-            
-            col1, col2 = st.columns(2)
-            col1.metric("VaR 95%", f"${var_95:,.0f}")
-            col2.metric("VaR 99%", f"${var_99:,.0f}")
-            
-            st.plotly_chart(plot_var_distribution(mc_pnl, var_95, var_99),
-                           width="stretch")
-            
-            metrics_for_limits = {
-                "var_95": var_95,
-                "var_99": var_99,
-            }
-            limit_results = evaluate_limits(metrics_for_limits, DEFAULT_LIMITS)
-            table = render_limit_table(limit_results)
-            if table is not None:
-                st.subheader("VaR Limits")
-                st.dataframe(table, width="stretch")
-        
+            from rateslib.var.monte_carlo import MonteCarloVaR
+
+            mc_engine = MonteCarloVaR(
+                base_curve=ois_curve,
+                historical_data=hist_rates,
+                pricer_func=portfolio_pv,
+            )
+            try:
+                mc_result = mc_engine.run_simulation(num_paths=num_paths, seed=RANDOM_SEED)
+            except Exception as exc:
+                st.warning(f"Monte Carlo VaR failed: {exc}")
+                mc_result = None
+            col1, col2, col3, col4 = st.columns(4)
+            if mc_result:
+                col1.metric(f"VaR 95%{var_label_suffix}", f"${mc_result.var_95:,.0f}")
+                col2.metric(f"VaR 99%{var_label_suffix}", f"${mc_result.var_99:,.0f}")
+                col3.metric(f"ES 95%{var_label_suffix}", f"${mc_result.es_95:,.0f}")
+                col4.metric(f"ES 99%{var_label_suffix}", f"${mc_result.es_99:,.0f}")
+                st.plotly_chart(
+                    plot_var_distribution(mc_result.pnl_distribution, mc_result.var_95, mc_result.var_99),
+                    width="stretch",
+                )
+                var_results_payload = {
+                    "var_95": mc_result.var_95,
+                    "var_99": mc_result.var_99,
+                    "es_975": mc_result.es_99,
+                    "scenario_worst": abs(mc_result.pnl_distribution.min()),
+                    "is_linear_only": var_coverage.is_linear_only,
+                }
         elif var_method == "Stressed VaR":
-            st.subheader("Stressed VaR")
-            
-            stress_period = st.selectbox("Stress Period", 
-                                        ["COVID-2020", "Rate Hike 2022", "GFC 2008"])
-            
-            st.info(f"Calculating VaR using {stress_period} historical data")
-            
-            # Synthetic stressed VaR
-            stressed_var_95 = 25000
-            stressed_var_99 = 45000
-            
-            col1, col2 = st.columns(2)
-            col1.metric("Stressed VaR 95%", f"${stressed_var_95:,.0f}")
-            col2.metric("Stressed VaR 99%", f"${stressed_var_99:,.0f}")
-            
-            metrics_for_limits = {
-                "var_95": stressed_var_95,
-                "var_99": stressed_var_99,
-            }
-            limit_results = evaluate_limits(metrics_for_limits, DEFAULT_LIMITS)
-            table = render_limit_table(limit_results)
-            if table is not None:
-                st.subheader("VaR Limits")
-                st.dataframe(table, width="stretch")
+            from rateslib.var.stress import StressedVaR
+
+            sv_engine = StressedVaR.from_predefined_period(
+                base_curve=ois_curve,
+                historical_data=hist_rates,
+                pricer_func=portfolio_pv,
+                period_name=stress_period,
+            )
+            try:
+                sv_result = sv_engine.compute_stressed_var()
+                if getattr(sv_engine, "used_fallback_full_history", False):
+                    st.info("Selected stress period has no data; using full history instead.")
+            except Exception as exc:
+                st.warning(f"Stressed VaR failed: {exc}")
+                sv_result = None
+            col1, col2, col3, col4 = st.columns(4)
+            if sv_result:
+                col1.metric(f"Stressed VaR 95%{var_label_suffix}", f"${sv_result.stressed_var_95:,.0f}")
+                col2.metric(f"Stressed VaR 99%{var_label_suffix}", f"${sv_result.stressed_var_99:,.0f}")
+                col3.metric(f"Stressed ES 95%{var_label_suffix}", f"${sv_result.stressed_es_95:,.0f}")
+                col4.metric(f"Stressed ES 99%{var_label_suffix}", f"${sv_result.stressed_es_99:,.0f}")
+                var_results_payload = {
+                    "var_95": sv_result.stressed_var_95,
+                    "var_99": sv_result.stressed_var_99,
+                    "es_975": sv_result.stressed_es_99,
+                    "scenario_worst": sv_result.stressed_var_99,
+                    "is_linear_only": var_coverage.is_linear_only,
+                }
+
+        # Liquidity uplift if we have a base var
+        if var_results_payload.get("var_99"):
+            from rateslib.liquidity import LiquidityEngine
+
+            liq_engine = LiquidityEngine()
+            lvar = liq_engine.compute_lvar(var_results_payload["var_99"], dv01_by_instrument={})
+            var_results_payload["lvar_uplift"] = lvar.liquidity_ratio - 1.0
+
+        if var_results_payload:
+            st.session_state["var_results"] = var_results_payload
         
         # =====================================================================
         # SABR Tail Risk Analysis (Section 7.2 from checklist)
@@ -1294,6 +1381,7 @@ def main():
                 st.info(msg)
         
         st.write("Impact of standardized market scenarios on portfolio P&L")
+        st.info("**Computed from repricing under shocked curves** — not hard-coded values")
         
         # Display scenario definitions
         st.subheader("📋 Scenario Definitions")
@@ -1319,31 +1407,37 @@ def main():
         
         st.success("✓ Scenario definitions are explicit and visible (checklist item 10.2)")
         
-        # Curve-only scenarios
+        # Run scenarios using real bump-and-reprice engine
         st.subheader("Curve-Only Scenarios")
-        st.markdown("Impact on linear products (bonds, swaps) - options unaffected")
+        st.markdown("*P&L computed via bump-and-reprice methodology*")
         
-        curve_scenarios_data = {
-            'Scenario': [
-                'Parallel +100bp', 'Parallel -100bp',
-                '2s10s Steepener', '2s10s Flattener',
-                'Twist around 5Y', 'Front-end Sell-off',
-                'Long-end Rally', 'Bear Flattener', 'Bull Steepener'
-            ],
-            'P&L': [
-                -435945, 435945, -27247, 27247,
-                -54493, -147132, 168929, -250669, 250669
-            ]
-        }
-        curve_scenarios_df = pd.DataFrame(curve_scenarios_data)
+        with st.spinner("Computing scenario P&Ls via repricing..."):
+            scenario_results = run_scenario_set(
+                positions_df=positions_df,
+                market_state=market_state,
+                valuation_date=valuation_date,
+                scenarios=STANDARD_SCENARIOS,
+            )
         
-        # Display table
-        st.dataframe(
-            curve_scenarios_df.style.format({'P&L': '${:,.0f}'}).background_gradient(
-                subset=['P&L'], cmap='RdYlGn', vmin=-300000, vmax=300000
-            ),
-            width="stretch"
-        )
+        if scenario_results:
+            curve_scenarios_df = scenarios_to_dataframe(scenario_results)
+            curve_scenarios_df = curve_scenarios_df.rename(columns={"P&L": "P&L"})
+            
+            # Display table with color gradient
+            st.dataframe(
+                curve_scenarios_df.style.format({'P&L': '${:,.0f}'}).background_gradient(
+                    subset=['P&L'], cmap='RdYlGn', vmin=curve_scenarios_df['P&L'].min(), vmax=curve_scenarios_df['P&L'].max()
+                ),
+                width="stretch"
+            )
+            
+            # Show computation method info
+            if scenario_results:
+                st.caption(f"Instruments priced per scenario: {scenario_results[0].instruments_priced}")
+                st.caption(f"Method: {scenario_results[0].computation_method}")
+        else:
+            st.warning("No scenario results computed - check portfolio data")
+            curve_scenarios_df = pd.DataFrame(columns=['Scenario', 'P&L'])
         
         # Vol-only scenarios
         st.subheader("Vol-Only Scenarios")
@@ -1410,7 +1504,7 @@ def main():
             st.success("✓ Combined shocks equal full repricing (checklist item 6.1)")
         
         # Scenario limits
-        worst_scenario = curve_scenarios_df['P&L'].min() if not curve_scenarios_df.empty else 0.0
+        worst_scenario = curve_scenarios_df['P&L'].min() if not curve_scenarios_df.empty and 'P&L' in curve_scenarios_df.columns else 0.0
         scenario_metrics = {"scenario_worst": abs(worst_scenario)}
         scenario_limits = evaluate_limits(scenario_metrics, DEFAULT_LIMITS)
         scen_table = render_limit_table(scenario_limits)
@@ -1419,7 +1513,8 @@ def main():
             st.dataframe(scen_table, width="stretch")
         
         # Waterfall chart
-        st.plotly_chart(plot_scenario_waterfall(curve_scenarios_df), width="stretch")
+        if not curve_scenarios_df.empty and 'P&L' in curve_scenarios_df.columns:
+            st.plotly_chart(plot_scenario_waterfall(curve_scenarios_df), width="stretch")
         
         # Custom scenario builder with configurable severity
         st.subheader("Custom Scenario Builder")

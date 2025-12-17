@@ -16,7 +16,8 @@ class LimitDefinition:
     breach: float
     unit: str = ""
     aggregation: str = "portfolio"
-    direction: str = "abs"  # "abs" or "signed"
+    magnitude: str = "abs"  # "abs" or "signed"
+    comparison: str = "max"  # "max" (upper bound) or "min" (lower bound)
     hard: bool = True
     description: str = ""
 
@@ -25,7 +26,7 @@ class LimitDefinition:
 class LimitResult:
     definition: LimitDefinition
     value: Optional[float]
-    status: str  # OK / Warning / Breach / Missing
+    status: str  # OK / Warning / Breach / Missing / Not Computed / Not Applicable
 
     @property
     def as_dict(self) -> Dict[str, Any]:
@@ -186,32 +187,44 @@ DEFAULT_LIMITS: List[LimitDefinition] = [
         breach=2,
         unit="count",
         aggregation="portfolio",
-        direction="signed",  # compare directly, no abs
+        magnitude="signed",  # compare directly, no abs
+        comparison="min",  # breach if below thresholds
         description="Minimum calibrated buckets",
         hard=True,
     ),
 ]
 
 
-def evaluate_limit(value: Optional[float], limit_def: LimitDefinition) -> LimitResult:
+def evaluate_limit(value: Optional[float], limit_def: LimitDefinition, status_override: Optional[str] = None) -> LimitResult:
+    if status_override:
+        return LimitResult(definition=limit_def, value=value, status=status_override)
+
     if value is None or (isinstance(value, float) and math.isnan(value)):
         return LimitResult(definition=limit_def, value=None, status="Missing")
 
-    val = abs(value) if limit_def.direction == "abs" else value
+    val = abs(value) if limit_def.magnitude == "abs" else value
     status = "OK"
-    if val >= limit_def.breach:
-        status = "Breach"
-    elif val >= limit_def.warn:
-        status = "Warning"
+    if limit_def.comparison == "max":
+        if val >= limit_def.breach:
+            status = "Breach"
+        elif val >= limit_def.warn:
+            status = "Warning"
+    elif limit_def.comparison == "min":
+        if val <= limit_def.breach:
+            status = "Breach"
+        elif val <= limit_def.warn:
+            status = "Warning"
     return LimitResult(definition=limit_def, value=value, status=status)
 
 
-def evaluate_limits(metrics: Dict[str, float], limits: List[LimitDefinition] = None) -> List[LimitResult]:
+def evaluate_limits(metrics: Dict[str, float], limits: List[LimitDefinition] = None, status_overrides: Dict[str, str] = None) -> List[LimitResult]:
     limits = limits or DEFAULT_LIMITS
+    status_overrides = status_overrides or {}
     results: List[LimitResult] = []
     for lim in limits:
+        override = status_overrides.get(lim.metric_key)
         value = metrics.get(lim.metric_key)
-        results.append(evaluate_limit(value, lim))
+        results.append(evaluate_limit(value, lim, status_override=override))
     return results
 
 

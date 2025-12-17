@@ -303,7 +303,7 @@ def risk_trade(trade: Dict[str, Any], market_state: MarketState, method: str = "
     if inst == "SWAPTION":
         expiry_tenor = trade["expiry_tenor"]
         swap_tenor = trade["swap_tenor"]
-        strike = float(trade.get("strike"))
+        strike_raw = trade.get("strike")
         notional = float(trade.get("notional", 1.0))
         vol_type = str(trade.get("vol_type", "NORMAL")).upper()
 
@@ -316,17 +316,45 @@ def risk_trade(trade: Dict[str, Any], market_state: MarketState, method: str = "
             expiry=DateUtils.tenor_to_years(expiry_tenor),
             tenor=DateUtils.tenor_to_years(swap_tenor),
         )
+        # Resolve strike with ATM default
+        if strike_raw is None or (isinstance(strike_raw, str) and str(strike_raw).upper() == "ATM"):
+            strike = forward
+        else:
+            try:
+                strike = float(strike_raw)
+            except Exception:
+                strike = forward
+        if strike <= 0:
+            strike = max(forward, 1e-6)
         risk_engine = SabrOptionRisk(vol_type=vol_type)
+        # Compute SABR vol for greeks aggregation
+        from ..vol.sabr import SabrModel
+        T = DateUtils.tenor_to_years(expiry_tenor)
+        model = SabrModel()
+        if vol_type == "NORMAL":
+            implied_vol = model.implied_vol_normal(forward, strike, T, sabr_params.to_sabr_params())
+        else:
+            implied_vol = model.implied_vol_black(forward, strike, T, sabr_params.to_sabr_params())
         sens = risk_engine.parameter_sensitivities(
             F=forward,
             K=strike,
-            T=DateUtils.tenor_to_years(expiry_tenor),
+            T=T,
             sabr_params=sabr_params.to_sabr_params(),
             annuity=annuity,
             is_call=True,
             notional=notional,
         )
-        return {"sabr_sensitivities": sens, "forward": forward, "annuity": annuity}
+        greeks = pricer.greeks(
+            S=forward,
+            K=strike,
+            T=T,
+            annuity=annuity,
+            vol=implied_vol,
+            vol_type=vol_type,
+            payer_receiver="PAYER",
+            notional=notional,
+        )
+        return {"sabr_sensitivities": sens, "forward": forward, "annuity": annuity, "greeks": greeks}
 
     if inst in {"CAPLET", "CAP", "CAPFLOOR"}:
         expiry_tenor = trade.get("expiry_tenor", "0D")

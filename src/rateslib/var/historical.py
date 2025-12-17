@@ -110,6 +110,10 @@ class HistoricalSimulation:
         """Convert historical data to rate changes."""
         # Pivot to get rates by date and tenor
         df = self.historical_data.copy()
+        # Accept wide format (date + tenor columns) by melting to long
+        if "rate" not in df.columns and "date" in df.columns:
+            value_cols = [c for c in df.columns if c.lower() != "date"]
+            df = df.melt(id_vars="date", value_vars=value_cols, var_name="tenor", value_name="rate")
         
         if 'date' in df.columns:
             df['date'] = pd.to_datetime(df['date'])
@@ -186,6 +190,8 @@ class HistoricalSimulation:
                 continue
         
         pnl_array = np.array(pnl_distribution)
+        if len(pnl_array) == 0:
+            raise ValueError("No historical scenarios available after filtering; check data and lookback window.")
         
         # Compute statistics
         # VaR is the loss at the specified percentile (negative P&L)

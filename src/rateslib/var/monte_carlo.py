@@ -104,6 +104,9 @@ class MonteCarloVaR:
     def _calibrate(self) -> None:
         """Calibrate covariance matrix from historical data."""
         df = self.historical_data.copy()
+        if "rate" not in df.columns and "date" in df.columns:
+            value_cols = [c for c in df.columns if c.lower() != "date"]
+            df = df.melt(id_vars="date", value_vars=value_cols, var_name="tenor", value_name="rate")
         
         if 'date' in df.columns:
             df['date'] = pd.to_datetime(df['date'])
