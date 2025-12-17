@@ -12,19 +12,32 @@ A comprehensive Python library for USD yield curve construction, fixed-income in
 ### Instrument Pricing
 - **Bonds**: Coupon bonds with clean/dirty prices, accrued interest, YTM
 - **Swaps**: Vanilla interest rate swaps (fixed vs floating)
-- **Futures**: SOFR/Eurodollar rate futures pricing
+- **Futures**: SOFR/Eurodollar rate futures pricing with P&L tracking
+- **Swaptions**: European swaptions with SABR volatility model
+- **Caplets/Floors**: Interest rate caps and floors with SABR pricing
+
+### Volatility Modeling
+- **SABR Model**: Industry-standard stochastic volatility model
+- **Volatility Surface**: Multi-dimensional vol surface by expiry and tenor
+- **Greeks**: Delta, vega, and parameter sensitivities
+- **Multiple Conventions**: Support for Normal (basis point) and Lognormal (Black) volatilities
 
 ### Risk Metrics
 - **DV01**: Dollar value of 1 basis point parallel shift
 - **Key Rate DV01**: Sensitivity by maturity bucket
 - **Convexity**: Second-order rate sensitivity
 - **Bump-and-Reprice**: Full revaluation risk framework
+- **Options Greeks**: Delta, vega, rho sensitivities for swaptions/caplets
 
 ### VaR & Stress Testing
 - **Historical Simulation**: Full repricing using historical rate moves
 - **Monte Carlo**: Multivariate normal simulation
 - **Stressed VaR**: Predefined stress periods (COVID-2020, Rate Hike 2022)
-- **Scenario Analysis**: Parallel shifts, twists, steepeners/flatteners
+- **Scenario Analysis**: 9 standard scenarios plus custom scenario builder
+  - Parallel shifts, twists, steepeners/flatteners
+  - NSS parameter tweaking (β₀-β₃, λ₁-λ₂)
+  - SABR parameter stressing (σ_ATM, ν, ρ)
+  - Full portfolio repricing with P&L attribution
 
 ### P&L Attribution
 - Carry & rolldown decomposition
@@ -40,13 +53,19 @@ A comprehensive Python library for USD yield curve construction, fixed-income in
 - **Real-Time Risk Monitor**: Shiny-based dashboard for live risk monitoring
 - **Interactive Analytics Dashboard**: Comprehensive Streamlit dashboard covering ALL library functionality
   - Curve visualization and analysis
-  - Interactive pricing calculators
+  - Interactive pricing calculators (bonds, swaps, futures, swaptions, caplets)
+  - SABR volatility surface visualization with implied vol curves
   - Risk metrics with visual breakdowns
   - VaR/ES analysis with distributions
-  - Scenario analysis with waterfall charts
-  - P&L attribution decomposition
+  - Enhanced scenario analysis with custom builder:
+    - NSS curve parameter tweaking
+    - SABR parameter stressing
+    - Live curve visualization
+    - Full portfolio repricing with P&L attribution
+  - P&L attribution decomposition (curve vs vol)
   - Liquidity risk (LVaR) calculations
   - Data explorer and export
+  - **100% position coverage** - all instrument types supported
 
 ## Installation
 
@@ -183,7 +202,20 @@ rates_risk_lib/
 │       │   ├── __init__.py
 │       │   ├── bonds.py       # Bond pricing
 │       │   ├── swaps.py       # IRS pricing
-│       │   └── futures.py     # Futures pricing
+│       │   ├── futures.py     # Futures pricing
+│       │   └── dispatcher.py  # Unified pricing dispatcher
+│       ├── options/
+│       │   ├── __init__.py
+│       │   ├── base_models.py # Black-Scholes foundation
+│       │   ├── swaption.py    # Swaption pricing
+│       │   ├── caplet.py      # Caplet/floor pricing
+│       │   └── sabr_risk.py   # SABR Greeks
+│       ├── vol/
+│       │   ├── __init__.py
+│       │   ├── sabr.py        # SABR model implementation
+│       │   ├── sabr_surface.py # Vol surface management
+│       │   ├── calibration.py # SABR calibration
+│       │   └── quotes.py      # Vol quote handling
 │       ├── risk/
 │       │   ├── __init__.py
 │       │   ├── bumping.py     # Bump engine
@@ -213,15 +245,20 @@ rates_risk_lib/
 │   ├── requirements_interactive.txt  # Streamlit dependencies
 │   └── README.md              # Dashboard documentation
 ├── scripts/
-│   ├── run_demo.py            # Demo script
-│   └── run_sabr_demo.py       # SABR/options demo
+│   ├── run_demo.py            # Main demo script
+│   ├── run_sabr_demo.py       # SABR/options demo
+│   └── run_comprehensive_demo.py  # Full system demo
 ├── tests/
 │   ├── test_conventions.py
 │   ├── test_dates.py
 │   ├── test_curves.py
 │   ├── test_pricers.py
+│   ├── test_options.py        # Swaption/caplet tests
+│   ├── test_sabr.py           # SABR model tests
+│   ├── test_sabr_risk_conventions.py  # SABR Greeks tests
 │   ├── test_risk.py
-│   └── test_var.py
+│   ├── test_var.py
+│   └── test_limit_reporting.py  # Risk limit tests
 ├── pyproject.toml
 └── README.md
 ```
@@ -328,6 +365,8 @@ The library uses the following market conventions:
 
 ## Testing
 
+The library includes **177 comprehensive tests** covering all modules:
+
 ```bash
 # Run all tests
 pytest tests/
@@ -337,7 +376,20 @@ pytest tests/ --cov=rateslib --cov-report=html
 
 # Run specific test file
 pytest tests/test_curves.py -v
+
+# Run SABR/options tests
+pytest tests/test_sabr.py tests/test_options.py -v
 ```
+
+**Test Coverage:**
+- ✅ Curve construction and interpolation
+- ✅ All instrument pricers (bonds, swaps, futures, options)
+- ✅ SABR model and calibration
+- ✅ Risk metrics and sensitivities
+- ✅ VaR/stress testing
+- ✅ Scenario analysis with futures support
+- ✅ P&L attribution
+- ✅ Options Greeks and volatility conventions
 
 ## Contributing
 

@@ -31,12 +31,16 @@ A comprehensive Streamlit-based dashboard covering **all library functionality**
 - Spread analysis
 - Discount factors
 - Forward rate curves
+- **SABR Implied Volatility** curves by bucket with smile plots and heatmaps
 
 **💰 Pricing Tab**
 - Interactive bond pricing calculator
 - Swap pricing with custom parameters
-- Futures pricing
+- Futures pricing with P&L tracking
+- **Swaption pricing** with SABR volatility
+- **Caplet/Floor pricing** with SABR volatility
 - Real-time DV01 calculation
+- Greeks display (delta, vega) for options
 
 **📊 Risk Metrics Tab**
 - Portfolio risk summary
@@ -51,11 +55,33 @@ A comprehensive Streamlit-based dashboard covering **all library functionality**
 - Expected Shortfall (ES) calculations
 - Interactive confidence level selection
 
+## Position Coverage
+
+The dashboard supports **100% of position types** in the sample portfolio:
+- ✅ US Treasuries (UST)
+- ✅ Interest Rate Swaps (IRS)
+- ✅ SOFR Futures (FUT)
+- ✅ Swaptions (SWAPTION)
+- ✅ Caplets/Floors (CAPLET)
+
+All 12 positions in `data/sample_book/positions.csv` price successfully with proper handling of:
+- Date fields (expiry_date, maturity_date)
+- Option fields (strike, underlying tenor, expiry tenor)
+- Direction fields (LONG/SHORT, PAYER/RECEIVER)
+- Robust NaN/NaT handling for optional fields
+
 **📉 Scenarios Tab**
-- Standard scenario impacts (parallel shifts, steepeners, flatteners)
+- Standard scenario impacts (9 pre-defined scenarios)
 - Waterfall chart visualization
-- Custom scenario builder
+- **Enhanced Custom Scenario Builder**:
+  - NSS curve parameter tweaking (β₀, β₁, β₂, β₃, λ₁, λ₂)
+  - SABR parameter stressing (σ_ATM scale, ν scale, ρ shift)
+  - Live yield curve visualization (base vs stressed)
+  - **Run Custom Scenario** button for full portfolio repricing
+  - P&L attribution breakdown (curve vs vol effects)
+  - Coverage metrics (100% position support)
 - Detailed P&L breakdown by scenario
+- **100% instrument coverage** (bonds, swaps, futures, swaptions, caplets)
 
 **💵 P&L Attribution Tab**
 - Daily P&L decomposition:
@@ -63,10 +89,12 @@ A comprehensive Streamlit-based dashboard covering **all library functionality**
   - Rolldown
   - Curve Move (Parallel)
   - Curve Move (Non-Parallel)
+  - **Volatility Move** (for options positions)
   - Convexity
   - Residual
 - Visual breakdown charts
 - Predicted vs realized P&L comparison
+- Separate attribution for curve and volatility effects
 
 **💧 Liquidity Risk Tab**
 - Liquidity-adjusted VaR (LVaR) calculations

@@ -68,22 +68,27 @@ Visualize and analyze yield curves:
 - Curve comparison (OIS vs Treasury)
 - Discount factors
 - Forward rates
+- **SABR Implied Volatility curves** by bucket
 
 **What to try:**
 - Compare OIS and Treasury curves
 - Examine the spread between curves
 - View forward rate curves
+- **Explore SABR vol smiles** across different expiries and tenors
 
 ### 💰 Pricing Tab
 Interactive pricing calculators:
 - **Bonds**: Price with custom coupon, maturity, frequency
 - **Swaps**: Calculate PV, DV01, and par rates
-- **Futures**: Theoretical pricing
+- **Futures**: Theoretical pricing with P&L tracking
+- **Swaptions**: Price with SABR volatility, view Greeks
+- **Caplets/Floors**: Price caps and floors with SABR
 
 **What to try:**
 - Price a 5-year bond with 4% coupon
 - Calculate par rate for a 10-year swap
 - Compare prices with different maturities
+- **Price a swaption** and view implied volatility and Greeks
 
 ### 📊 Risk Metrics Tab
 Portfolio risk analysis:
@@ -108,20 +113,28 @@ Value at Risk calculations:
 
 ### 📉 Scenarios Tab
 Stress testing and scenario analysis:
-- Standard scenarios (parallel shifts, steepeners, flatteners)
+- Standard scenarios (9 pre-defined: parallel shifts, steepeners, flatteners)
 - Waterfall chart visualization
-- Custom scenario builder
+- **Enhanced Custom Scenario Builder**:
+  - Tweak NSS curve parameters (β₀, β₁, β₂, β₃, λ₁, λ₂)
+  - Stress SABR parameters (σ_ATM, ν, ρ)
+  - Live curve visualization (base vs stressed)
+  - **Run Custom Scenario** for full portfolio repricing
+  - P&L attribution (curve vs vol)
 
 **What to try:**
 - See impact of +100bp parallel shift
-- Build a custom scenario with twist
+- **Build a custom scenario** by tweaking NSS parameters
+- **Stress SABR volatility** and see impact on options
 - Compare bear flattener vs bull steepener
+- **Run full repricing** and view coverage metrics
 
 ### 💵 P&L Attribution Tab
 Decompose portfolio P&L:
 - Carry
 - Rolldown
 - Curve moves (parallel & non-parallel)
+- **Volatility moves** (for options positions)
 - Convexity
 - Residual
 
@@ -129,6 +142,7 @@ Decompose portfolio P&L:
 - Understand which components drive P&L
 - See predicted vs realized P&L
 - Analyze residual (unexplained) portion
+- **View separate curve and vol attribution** for options
 
 ### 💧 Liquidity Risk Tab
 Liquidity-adjusted VaR:
@@ -161,6 +175,9 @@ Browse and export data:
 3. **Export Data**: Download position data as CSV from the Data Explorer tab
 4. **Real-time Updates**: Adjust sliders and inputs to see immediate recalculations
 5. **Full Screen**: Click the expand icon on any chart for full-screen view
+6. **SABR Exploration**: Navigate to Curves tab to visualize volatility smiles
+7. **Custom Scenarios**: Use the enhanced scenario builder to stress both curves AND volatility
+8. **Position Coverage**: All 12 positions (including swaptions and caplets) now price successfully
 
 ## Keyboard Shortcuts
 
