@@ -980,14 +980,18 @@ def main():
                 bond_notional = st.number_input("Notional ($)", value=1_000_000, 
                                                min_value=1000, step=100000)
             with col3:
-                st.write("")  # Spacing
+                day_count_str = st.selectbox("Day Count Convention", ["ACT/360", "ACT/365", "ACT/ACT", "30/360"], index=0)
             
             if st.button("Price Bond"):
-                pricer = BondPricer(treasury_curve)
+                from rateslib.conventions import DayCount, Conventions
+                day_count_enum = DayCount.from_string(day_count_str)
+                bond_conventions = Conventions(day_count=day_count_enum)
+                pricer = BondPricer(treasury_curve, conventions=bond_conventions)
                 dirty_price, clean_price, accrued = pricer.price(
                     settlement=valuation_date,
                     maturity=bond_maturity if isinstance(bond_maturity, date) else bond_maturity.date(),
                     coupon_rate=bond_coupon,
+                    face_value=100.0,
                     frequency=bond_freq
                 )
                 
