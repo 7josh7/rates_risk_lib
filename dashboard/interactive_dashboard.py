@@ -1250,12 +1250,13 @@ def main():
             st.caption("Unit: $ per 1bp bump at each tenor")
         
         # Convexity analysis
-        st.subheader("Convexity Analysis")
+        # st.subheader("Convexity Analysis")
         col1, col2 = st.columns(2)
         with col1:
             st.metric("Worst Key-Rate DV01", f"${worst_keyrate:,.2f}")
         with col2:
-            st.info("Convexity measures the curvature of price-yield relationship")
+            #st.info("Convexity measures the curvature of price-yield relationship")
+            st.info("Worst key-rate DV01 indicates highest sensitivity to a 1bp move at any single tenor")
 
         st.subheader("SABR Calibration Diagnostics")
         if market_state.sabr_surface is None or normalized_vol_quotes.empty:
