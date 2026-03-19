@@ -6,7 +6,7 @@ accept a single object instead of juggling multiple inputs.
 """
 
 from dataclasses import dataclass, field
-from datetime import date, datetime
+from datetime import date, datetime, UTC
 from typing import Any, Dict, Optional
 
 from .curves.curve import Curve
@@ -51,7 +51,7 @@ class MarketState:
 
     curve: CurveState
     sabr_surface: Optional[SabrSurfaceState] = None
-    asof: Any = field(default_factory=datetime.utcnow)
+    asof: Any = field(default_factory=lambda: datetime.now(UTC))
 
     def get_sabr_params(self, expiry: str, tenor: str, allow_fallback: bool = True) -> Optional[SabrBucketParams]:
         """

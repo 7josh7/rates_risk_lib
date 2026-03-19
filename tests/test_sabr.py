@@ -4,6 +4,8 @@ Tests for SABR volatility model.
 
 import pytest
 import numpy as np
+import pandas as pd
+from datetime import date
 from rateslib.vol.sabr import (
     SabrParams,
     SabrModel,
@@ -11,6 +13,10 @@ from rateslib.vol.sabr import (
     hagan_normal_vol,
     _hagan_atm_vol,
 )
+from rateslib.vol.sabr_surface import SabrSurfaceState, SabrBucketParams
+from rateslib.vol.quotes import normalize_vol_quotes
+from rateslib.curves import create_flat_curve
+from rateslib import CurveState
 
 
 class TestSabrParams:
@@ -282,6 +288,11 @@ class TestSabrCalibration:
 
 class TestVolQuotes:
     """Tests for vol quote handling."""
+
+    @pytest.fixture
+    def curve_state(self):
+        curve = create_flat_curve(date(2024, 1, 15), rate=0.04, max_tenor_years=10.0)
+        return CurveState(discount_curve=curve, projection_curve=curve)
     
     def test_vol_quote_creation(self):
         """Test VolQuote dataclass."""
@@ -304,7 +315,6 @@ class TestVolQuotes:
     def test_strike_value(self):
         """Test strike value calculation."""
         from rateslib.vol.quotes import VolQuote
-        from datetime import date
         
         F = 0.04
         
@@ -319,3 +329,81 @@ class TestVolQuotes:
         # Fixed strike (numeric)
         fixed = VolQuote(date(2024, 1, 15), "1Y", "5Y", 0.045, 0.005, "NORMAL")
         assert fixed.strike_value(F) == 0.045
+
+    def test_normalize_vol_quotes_skips_malformed_rows(self, curve_state):
+        quotes = pd.DataFrame(
+            [
+                {
+                    "instrument_type": "SWAPTION",
+                    "expiry": "1Y",
+                    "underlying_tenor": "5Y",
+                    "quote_type": "ATM",
+                    "quote_value": 0.0,
+                    "vol": 0.0045,
+                    "vol_type": "NORMAL",
+                },
+                {
+                    "instrument_type": "SWAPTION",
+                    "expiry": "BAD",
+                    "underlying_tenor": "5Y",
+                    "quote_type": "ATM",
+                    "quote_value": 0.0,
+                    "vol": 0.0046,
+                    "vol_type": "NORMAL",
+                },
+            ]
+        )
+
+        normalized = normalize_vol_quotes(quotes, curve_state, instrument_hint="SWAPTION")
+
+        assert len(normalized) == 1
+        assert normalized.iloc[0]["expiry"] == "1Y"
+
+    def test_normalize_vol_quotes_drops_nan_relative_strikes(self, curve_state):
+        quotes = pd.DataFrame(
+            [
+                {
+                    "instrument_type": "SWAPTION",
+                    "expiry": "1Y",
+                    "underlying_tenor": "5Y",
+                    "quote_type": "BPS",
+                    "quote_value": np.nan,
+                    "vol": 0.0045,
+                    "vol_type": "NORMAL",
+                }
+            ]
+        )
+
+        normalized = normalize_vol_quotes(quotes, curve_state, instrument_hint="SWAPTION")
+
+        assert normalized.empty
+
+
+class TestSabrSurfaceState:
+    """Tests for SABR surface bucket lookup."""
+
+    def test_numeric_bucket_lookup_uses_nearest_fallback(self):
+        surface = SabrSurfaceState(
+            {
+                ("1Y", "5Y"): SabrBucketParams(sigma_atm=0.01, nu=0.4, rho=-0.2, beta=0.5),
+                ("2Y", "10Y"): SabrBucketParams(sigma_atm=0.012, nu=0.45, rho=-0.15, beta=0.5),
+            }
+        )
+
+        params = surface.get_bucket_params(1.0, 5.0, allow_fallback=True)
+
+        assert params is not None
+        assert params.sigma_atm == 0.01
+
+    def test_numeric_string_bucket_lookup_uses_nearest_fallback(self):
+        surface = SabrSurfaceState(
+            {
+                ("1Y", "5Y"): SabrBucketParams(sigma_atm=0.01, nu=0.4, rho=-0.2, beta=0.5),
+                ("2Y", "10Y"): SabrBucketParams(sigma_atm=0.012, nu=0.45, rho=-0.15, beta=0.5),
+            }
+        )
+
+        params = surface.get_bucket_params("1.0", "5.0", allow_fallback=True)
+
+        assert params is not None
+        assert params.sigma_atm == 0.01

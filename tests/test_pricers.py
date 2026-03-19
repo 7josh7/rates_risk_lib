@@ -7,7 +7,9 @@ import numpy as np
 import pytest
 
 from rateslib.curves import Curve, create_flat_curve
-from rateslib.pricers import BondPricer, SwapPricer, FuturesPricer, FuturesContract
+from rateslib.market_state import CurveState, MarketState
+from rateslib.pricers import BondPricer, SwapPricer, FuturesPricer, FuturesContract, risk_trade
+from rateslib.vol.sabr_surface import SabrSurfaceState, SabrBucketParams
 
 
 @pytest.fixture
@@ -220,3 +222,62 @@ class TestFuturesPricer:
         
         # SOFR futures DV01 should be ~$25 per bp per contract
         assert 20 < dv01 < 30
+
+
+class TestDispatcherRisk:
+    """Tests for trade-level risk dispatch."""
+
+    def test_receiver_swaption_delta_has_opposite_sign(self, sample_curve):
+        market_state = MarketState(
+            curve=CurveState(sample_curve, sample_curve),
+            sabr_surface=SabrSurfaceState(
+                {("1Y", "5Y"): SabrBucketParams(sigma_atm=0.01, nu=0.4, rho=-0.2, beta=0.5)}
+            ),
+        )
+
+        payer_trade = {
+            "instrument_type": "SWAPTION",
+            "expiry_tenor": "1Y",
+            "swap_tenor": "5Y",
+            "strike": "ATM",
+            "payer_receiver": "PAYER",
+            "notional": 1_000_000,
+            "vol_type": "NORMAL",
+        }
+        receiver_trade = {
+            **payer_trade,
+            "payer_receiver": "RECEIVER",
+        }
+
+        payer_risk = risk_trade(payer_trade, market_state)
+        receiver_risk = risk_trade(receiver_trade, market_state)
+
+        assert payer_risk["greeks"]["delta"] > 0
+        assert receiver_risk["greeks"]["delta"] < 0
+
+    def test_caplet_risk_returns_greeks(self, sample_curve):
+        market_state = MarketState(
+            curve=CurveState(sample_curve, sample_curve),
+            sabr_surface=SabrSurfaceState(
+                {("6M", "6M"): SabrBucketParams(sigma_atm=0.01, nu=0.4, rho=-0.2, beta=0.5)}
+            ),
+        )
+
+        caplet_trade = {
+            "instrument_type": "CAPLET",
+            "start_date": date(2024, 7, 15),
+            "end_date": date(2025, 1, 15),
+            "expiry_tenor": "6M",
+            "index_tenor": "6M",
+            "delta_t": 0.5,
+            "strike": "ATM",
+            "notional": 1_000_000,
+            "is_cap": True,
+            "vol_type": "NORMAL",
+        }
+
+        risk = risk_trade(caplet_trade, market_state)
+
+        assert "greeks" in risk
+        assert risk["greeks"]["delta"] != 0
+        assert risk["greeks"]["gamma"] >= 0

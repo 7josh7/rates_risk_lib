@@ -316,7 +316,14 @@ class Future(CurveInstrument):
     
     def implied_rate(self) -> float:
         """Convert futures price quote to implied rate."""
-        # Quote is 100 - rate
+        quote_type = str(self.quote_type).upper()
+
+        # Support both explicit quote types and practical heuristics:
+        # futures prices are typically around 90-100, while quoted rates are decimals.
+        if quote_type == "RATE" and self.quote <= 1.0:
+            return float(self.quote)
+
+        # Default to price convention: quote = 100 - 100 * rate
         return (100.0 - self.quote) / 100.0
     
     def maturity_date(self, anchor: date) -> date:
@@ -364,11 +371,21 @@ def _interpolate_df(t: float, prior_dfs: List[Tuple[float, float]]) -> float:
     Returns:
         Interpolated discount factor
     """
+    if not np.isfinite(t):
+        raise ValueError("Target time must be finite")
     if not prior_dfs:
         return 1.0
     
+    validated_dfs: List[Tuple[float, float]] = []
+    for time, df in prior_dfs:
+        if not np.isfinite(time) or time < 0:
+            raise ValueError("Prior discount-factor times must be finite and non-negative")
+        if not np.isfinite(df) or df <= 0:
+            raise ValueError("Prior discount factors must be finite and strictly positive")
+        validated_dfs.append((float(time), float(df)))
+
     # Sort by time
-    sorted_dfs = sorted(prior_dfs, key=lambda x: x[0])
+    sorted_dfs = sorted(validated_dfs, key=lambda x: x[0])
     
     if t <= 0:
         return 1.0

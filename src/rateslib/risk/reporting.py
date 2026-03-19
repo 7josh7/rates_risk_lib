@@ -45,11 +45,11 @@ def _parse_date(val) -> Optional[date]:
     try:
         if val is None:
             return None
-        if isinstance(val, date):
-            return val
         # Check for pandas NaT or NaN
         if pd.isna(val):
             return None
+        if isinstance(val, date):
+            return val
         result = pd.to_datetime(val)
         if pd.isna(result):
             return None
@@ -163,10 +163,21 @@ def _build_trade_from_position_legacy(pos: pd.Series, valuation_date: date) -> O
             "pay_receive": pay_receive,
         }
     
-    if inst in {"SWAPTION", "CAPLET", "CAP", "CAPFLOOR"}:
+    if inst == "SWAPTION":
         maturity = _parse_date(pos.get("maturity_date"))
         expiry_tenor = pos.get("expiry_tenor") or pos.get("option_expiry")
-        swap_tenor = pos.get("swap_tenor") or pos.get("tenor")
+        swap_tenor = pos.get("swap_tenor") or pos.get("tenor") or pos.get("underlying_swap_tenor")
+        expiry_date = _parse_date(pos.get("expiry_date"))
+        position = str(pos.get("position") or pos.get("direction", "")).upper()
+        sign = -1.0 if position in {"SHORT", "SELL"} else 1.0
+        payer_receiver = str(pos.get("payer_receiver") or ("PAYER" if sign > 0 else "RECEIVER")).upper()
+
+        if not expiry_tenor and expiry_date:
+            years = max(0.25, (expiry_date - valuation_date).days / 365.25)
+            if years < 1:
+                expiry_tenor = f"{max(1, int(round(years * 12)))}M"
+            else:
+                expiry_tenor = f"{int(round(years))}Y"
         if not expiry_tenor and maturity:
             years = max(0.25, round((maturity - valuation_date).days / 365.25))
             expiry_tenor = f"{int(years)}Y"
@@ -177,9 +188,54 @@ def _build_trade_from_position_legacy(pos: pd.Series, valuation_date: date) -> O
             "expiry_tenor": str(expiry_tenor),
             "swap_tenor": str(swap_tenor),
             "strike": pos.get("strike", "ATM") or "ATM",
-            "payer_receiver": "PAYER" if direction in {"LONG", "BUY"} else "RECEIVER",
+            "payer_receiver": payer_receiver,
             "notional": notional * sign,
             "vol_type": "NORMAL",
+        }
+
+    if inst in {"CAPLET", "CAP", "CAPFLOOR"}:
+        start_date = _parse_date(pos.get("caplet_start_date"))
+        end_date = _parse_date(pos.get("caplet_end_date"))
+        if not start_date or not end_date or end_date <= start_date:
+            return None
+
+        position = str(pos.get("position") or pos.get("direction", "")).upper()
+        sign = -1.0 if position in {"SHORT", "SELL"} else 1.0
+
+        delta_t = (end_date - start_date).days / 365.25
+        if delta_t < 0.17:
+            index_tenor = "1M"
+        elif delta_t < 0.29:
+            index_tenor = "3M"
+        elif delta_t < 0.42:
+            index_tenor = "6M"
+        else:
+            index_tenor = "12M"
+
+        expiry_days = (start_date - valuation_date).days
+        if expiry_days <= 0:
+            return None
+        expiry_years = expiry_days / 365.25
+        if expiry_years < 0.5:
+            expiry_tenor = f"{max(1, int(round(expiry_years * 12)))}M"
+        else:
+            expiry_tenor = f"{int(round(expiry_years))}Y"
+
+        is_cap = pos.get("is_cap", True)
+        if isinstance(is_cap, str):
+            is_cap = is_cap.upper() in {"TRUE", "CAP", "1", "YES"}
+
+        return {
+            "instrument_type": "CAPLET",
+            "start_date": start_date,
+            "end_date": end_date,
+            "strike": pos.get("strike", "ATM") or "ATM",
+            "notional": notional * sign,
+            "is_cap": is_cap,
+            "vol_type": "NORMAL",
+            "expiry_tenor": expiry_tenor,
+            "index_tenor": index_tenor,
+            "delta_t": delta_t,
         }
     
     if inst in {"FUT", "FUTURE", "FUTURES"}:
@@ -301,7 +357,7 @@ def compute_curve_risk_metrics(
     if not trades:
         if failed_trades:
             warnings.append(
-                f"⚠️ All {len(positions_df)} positions failed to build. "
+                f"All {len(positions_df)} positions failed to build. "
                 "Check position data for missing required fields."
             )
         return CurveRiskMetrics(
@@ -319,13 +375,13 @@ def compute_curve_risk_metrics(
     
     # Compute base PV with failure tracking
     base_pv = 0.0
-    price_failures = 0
+    priced_trades: List[Dict[str, Any]] = []
     for trade in trades:
         try:
             result = price_trade(trade, market_state)
             base_pv += result.pv
+            priced_trades.append(trade)
         except Exception as e:
-            price_failures += 1
             if use_explicit_builders:
                 failed_trades.append(TradeFailure(
                     position_id=trade.get("_position_id"),
@@ -334,6 +390,23 @@ def compute_curve_risk_metrics(
                     error_message=str(e),
                     stage="price",
                 ))
+
+    if not priced_trades:
+        warnings.append(
+            "All buildable positions failed during base pricing. Risk metrics could not be computed."
+        )
+        return CurveRiskMetrics(
+            total_dv01=0.0,
+            keyrate_dv01={t: 0.0 for t in keyrate_tenors},
+            worst_keyrate_dv01=0.0,
+            base_pv=0.0,
+            tenors_used=keyrate_tenors,
+            instrument_coverage=0,
+            total_instruments=len(positions_df),
+            excluded_types=list(excluded_types),
+            failed_trades=failed_trades,
+            warnings=warnings,
+        )
     
     # Compute parallel DV01 using bump-and-reprice
     bump_engine = BumpEngine(market_state.curve.discount_curve)
@@ -359,12 +432,13 @@ def compute_curve_risk_metrics(
     
     # Price under bumped curves
     bumped_pv = 0.0
-    for trade in trades:
+    parallel_failures = 0
+    for trade in priced_trades:
         try:
             result = price_trade(trade, bumped_market)
             bumped_pv += result.pv
         except Exception:
-            pass
+            parallel_failures += 1
     
     total_dv01 = -(bumped_pv - base_pv) / bump_bp
     
@@ -394,30 +468,39 @@ def compute_curve_risk_metrics(
         
         # Price under tenor-bumped curves
         tenor_bumped_pv = 0.0
-        for trade in trades:
+        tenor_failures = 0
+        for trade in priced_trades:
             try:
                 result = price_trade(trade, tenor_bumped_market)
                 tenor_bumped_pv += result.pv
             except Exception:
-                pass
+                tenor_failures += 1
         
         kr_dv01 = -(tenor_bumped_pv - base_pv) / bump_bp
         keyrate_dv01[tenor] = kr_dv01
+        if tenor_failures:
+            warnings.append(
+                f"{tenor_failures} position(s) could not be repriced under the {tenor} bump."
+            )
     
     # Find worst key-rate DV01
     worst_keyrate = max(abs(v) for v in keyrate_dv01.values()) if keyrate_dv01 else 0.0
     
     # Generate warnings
-    coverage = len(trades) / len(positions_df) if len(positions_df) > 0 else 1.0
+    coverage = len(priced_trades) / len(positions_df) if len(positions_df) > 0 else 1.0
     if coverage < 1.0:
         warnings.append(
-            f"⚠️ Coverage: {coverage:.1%} ({len(trades)}/{len(positions_df)} positions). "
+            f"Coverage: {coverage:.1%} ({len(priced_trades)}/{len(positions_df)} positions). "
             f"Some positions were excluded."
         )
     if failed_trades:
         warnings.append(
-            f"⚠️ {len(failed_trades)} position(s) failed to price. "
+            f"{len(failed_trades)} position(s) failed to price. "
             "DV01/key-rate calculations are incomplete."
+        )
+    if parallel_failures:
+        warnings.append(
+            f"{parallel_failures} position(s) could not be repriced under the parallel bump."
         )
     
     return CurveRiskMetrics(
@@ -426,7 +509,7 @@ def compute_curve_risk_metrics(
         worst_keyrate_dv01=worst_keyrate,
         base_pv=base_pv,
         tenors_used=keyrate_tenors,
-        instrument_coverage=len(trades),
+        instrument_coverage=len(priced_trades),
         total_instruments=len(positions_df),
         excluded_types=list(excluded_types),
         failed_trades=failed_trades,
@@ -494,69 +577,16 @@ def compute_limit_metrics(
 
     for _, pos in positions_df.iterrows():
         inst = str(pos.get("instrument_type", "")).upper()
-        notional = float(abs(pos.get("notional", 0.0)))
-        direction = str(pos.get("direction", "")).upper()
-        sign = -1.0 if direction in {"SHORT", "PAY_FIXED", "PAY"} else 1.0
 
-        if inst in {"BOND", "UST"}:
-            maturity = _parse_date(pos.get("maturity_date"))
-            settlement = valuation_date
-            if not maturity:
-                continue
-            trade = {
-                "instrument_type": inst,
-                "settlement": settlement,
-                "maturity": maturity,
-                "coupon": float(pos.get("coupon", 0.0)),
-                "notional": notional * sign,
-            }
-        elif inst in {"SWAP", "IRS"}:
-            maturity = _parse_date(pos.get("maturity_date"))
-            if not maturity:
-                continue
-            pay_receive = "PAY" if "PAY" in direction else "RECEIVE"
-            trade = {
-                "instrument_type": "SWAP",
-                "effective": valuation_date,
-                "maturity": maturity,
-                "notional": notional,
-                "fixed_rate": float(pos.get("coupon", 0.0)),
-                "pay_receive": pay_receive,
-            }
-        elif inst in {"SWAPTION", "CAPLET", "CAP", "CAPFLOOR"}:
+        if inst in {"SWAPTION", "CAPLET", "CAP", "CAPFLOOR"}:
             meta["has_option_positions"] = True
-            # Attempt to build a minimal swaption trade using maturity tenor if available
-            maturity = _parse_date(pos.get("maturity_date"))
-            expiry_tenor = pos.get("expiry_tenor") or pos.get("option_expiry")
-            swap_tenor = pos.get("swap_tenor") or pos.get("tenor") or pos.get("underlying_swap_tenor")
-            
-            # Check for explicit expiry_date first
-            expiry_date = _parse_date(pos.get("expiry_date"))
-            if expiry_date is not None and not expiry_tenor:
-                years = max(0.25, (expiry_date - valuation_date).days / 365.25)
-                if years < 1:
-                    expiry_tenor = f"{max(1, int(round(years * 12)))}M"
-                else:
-                    expiry_tenor = f"{int(round(years))}Y"
-            elif not expiry_tenor and maturity is not None:
-                # derive tenor in years and round to nearest year label
-                years = max(0.25, round((maturity - valuation_date).days / 365.25))
-                expiry_tenor = f"{int(years)}Y"
-            
-            if not expiry_tenor:
-                expiry_tenor = "1Y"  # Default fallback
-            if not swap_tenor:
-                swap_tenor = "5Y"
-            trade = {
-                "instrument_type": "SWAPTION",
-                "expiry_tenor": str(expiry_tenor),
-                "swap_tenor": str(swap_tenor),
-                "strike": pos.get("strike", "ATM") or "ATM",
-                "payer_receiver": str(pos.get("payer_receiver", "PAYER")).upper(),
-                "notional": notional * sign,
-                "vol_type": "NORMAL",
-            }
-        else:
+
+        try:
+            trade = build_trade_from_position(pos, valuation_date)
+        except Exception:
+            trade = _build_trade_from_position_legacy(pos, valuation_date)
+
+        if trade is None:
             continue
 
         try:
@@ -565,15 +595,15 @@ def compute_limit_metrics(
             continue
 
         if "dv01" in res:
-            metrics["total_dv01"] += sign * float(res["dv01"])
+            metrics["total_dv01"] += float(res["dv01"])
 
         sens = res.get("sabr_sensitivities")
         if sens:
             # Use available sensitivities; defaults to 0.0 if missing
             have_vegas = True
-            sabr_vega_atm += float(sens.get("dV_dsigma_atm", sens.get("vega", 0.0))) * sign
-            sabr_vega_nu += float(sens.get("dV_dnu", 0.0)) * sign
-            sabr_vega_rho += float(sens.get("dV_drho", 0.0)) * sign
+            sabr_vega_atm += float(sens.get("dV_dsigma_atm", sens.get("vega", 0.0)))
+            sabr_vega_nu += float(sens.get("dV_dnu", 0.0))
+            sabr_vega_rho += float(sens.get("dV_drho", 0.0))
         greeks = res.get("greeks")
         if greeks:
             opt_delta += float(greeks.get("delta", 0.0))
@@ -714,7 +744,7 @@ def build_var_portfolio_pricer(
     
     if is_linear_only:
         warnings.append(
-            "⚠️ VaR/ES currently excludes options (linear-only). "
+            "VaR/ES currently excludes options (linear-only). "
             f"Excluded options PV: ${option_pv:,.0f}"
         )
     

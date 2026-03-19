@@ -11,6 +11,7 @@ These tests verify the explicit trade builder system enforces:
 
 import pytest
 import pandas as pd
+import numpy as np
 from datetime import date
 from typing import Dict, Any
 
@@ -189,6 +190,18 @@ class TestBondBuilder:
         with pytest.raises(MissingFieldError, match="notional"):
             build_bond_trade(pos, valuation_date)
 
+    def test_nan_maturity_raises_error(self, valid_bond_position, valuation_date):
+        valid_bond_position["maturity_date"] = np.nan
+
+        with pytest.raises(MissingFieldError, match="maturity_date"):
+            build_bond_trade(valid_bond_position, valuation_date)
+
+    def test_nan_notional_raises_error(self, valid_bond_position, valuation_date):
+        valid_bond_position["notional"] = np.nan
+
+        with pytest.raises(MissingFieldError, match="notional"):
+            build_bond_trade(valid_bond_position, valuation_date)
+
 
 # =============================================================================
 # Test Swap Builder
@@ -289,6 +302,19 @@ class TestSwaptionBuilder:
         with pytest.raises(InvalidOptionError, match="must be 'PAYER' or 'RECEIVER'"):
             build_swaption_trade(valid_swaption_position, valuation_date)
 
+    def test_nan_underlying_swap_tenor_raises_error(self, valid_swaption_position, valuation_date):
+        valid_swaption_position["underlying_swap_tenor"] = np.nan
+        valid_swaption_position["swap_tenor"] = np.nan
+
+        with pytest.raises(MissingFieldError, match="underlying_swap_tenor"):
+            build_swaption_trade(valid_swaption_position, valuation_date)
+
+    def test_nan_notional_raises_error(self, valid_swaption_position, valuation_date):
+        valid_swaption_position["notional"] = np.nan
+
+        with pytest.raises(MissingFieldError, match="notional"):
+            build_swaption_trade(valid_swaption_position, valuation_date)
+
 
 # =============================================================================
 # Test Caplet Builder - CRITICAL: No Coercion to Swaption
@@ -353,6 +379,12 @@ class TestCapletBuilder:
         valid_caplet_position["caplet_end_date"] = "2023-09-15"
         
         with pytest.raises(InvalidOptionError, match="must be after valuation_date"):
+            build_caplet_trade(valid_caplet_position, valuation_date)
+
+    def test_nan_notional_raises_error(self, valid_caplet_position, valuation_date):
+        valid_caplet_position["notional"] = np.nan
+
+        with pytest.raises(MissingFieldError, match="notional"):
             build_caplet_trade(valid_caplet_position, valuation_date)
 
 

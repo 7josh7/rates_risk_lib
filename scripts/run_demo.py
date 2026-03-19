@@ -54,6 +54,14 @@ from rateslib import (
 )
 
 
+def normalize_vol_type(value: object, default: str = "NORMAL") -> str:
+    """Return a valid option vol type, defaulting missing/invalid inputs."""
+    vol_type = str(value if value is not None else default).upper().strip()
+    if vol_type in {"NORMAL", "LOGNORMAL"}:
+        return vol_type
+    return default
+
+
 def load_ois_quotes(data_dir: Path) -> pd.DataFrame:
     """Load OIS swap quotes from CSV."""
     return pd.read_csv(data_dir / "sample_quotes" / "ois_quotes.csv", comment="#")
@@ -284,7 +292,7 @@ def price_portfolio(
 
             expiry_tenor = pos.get('expiry_tenor', '1Y')
             swap_tenor = pos.get('swap_tenor', '5Y')
-            vol_type = str(pos.get('vol_type', 'NORMAL')).upper()
+            vol_type = normalize_vol_type(pos.get('vol_type', 'NORMAL'))
             payer_receiver = "PAYER" if str(direction).upper().startswith("PAY") or str(direction).upper().startswith("PAYER") else "RECEIVER"
 
             try:

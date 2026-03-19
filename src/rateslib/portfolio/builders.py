@@ -62,7 +62,7 @@ For SWAPS:
 """
 
 from dataclasses import dataclass, field
-from datetime import date
+from datetime import date, datetime
 from typing import Any, Dict, List, Optional, Tuple
 
 import pandas as pd
@@ -157,10 +157,22 @@ def _parse_date(val) -> Optional[date]:
     """Parse a value to date, returning None if unparseable."""
     if val is None:
         return None
+    try:
+        if pd.isna(val):
+            return None
+    except Exception:
+        pass
+    if isinstance(val, pd.Timestamp):
+        return val.date()
+    if isinstance(val, datetime):
+        return val.date()
     if isinstance(val, date):
         return val
     try:
-        return pd.to_datetime(val).date()
+        result = pd.to_datetime(val)
+        if pd.isna(result):
+            return None
+        return result.date()
     except Exception:
         return None
 
@@ -172,8 +184,33 @@ def _require_field(pos: pd.Series, field_name: str, instrument_type: str) -> Any
     
     if val is None or (isinstance(val, str) and val.strip() == ""):
         raise MissingFieldError(position_id, field_name, instrument_type)
+    is_missing_scalar = False
+    try:
+        is_missing_scalar = bool(pd.isna(val))
+    except TypeError:
+        pass
+    except ValueError:
+        pass
+    except Exception:
+        pass
+    if is_missing_scalar:
+        raise MissingFieldError(position_id, field_name, instrument_type)
+    if isinstance(val, str) and val.strip().upper() in {"NAN", "NAT", "NONE"}:
+        raise MissingFieldError(position_id, field_name, instrument_type)
     
     return val
+
+
+def _is_missing_value(val: Any) -> bool:
+    """Return True for scalar missing values and blank string sentinels."""
+    if val is None:
+        return True
+    if isinstance(val, str) and val.strip().upper() in {"", "NAN", "NAT", "NONE"}:
+        return True
+    try:
+        return bool(pd.isna(val))
+    except Exception:
+        return False
 
 
 def _parse_strike(strike_raw: Any, forward: float = 0.0) -> float:
@@ -186,10 +223,15 @@ def _parse_strike(strike_raw: Any, forward: float = 0.0) -> float:
     """
     if strike_raw is None:
         return forward if forward > 0 else 0.01  # Default fallback
+    try:
+        if pd.isna(strike_raw):
+            return forward if forward > 0 else 0.01
+    except Exception:
+        pass
     
     if isinstance(strike_raw, str):
         strike_str = strike_raw.upper().strip()
-        if strike_str == "ATM":
+        if strike_str in {"", "ATM", "NAN", "NAT", "NONE"}:
             return forward if forward > 0 else 0.01
         try:
             return float(strike_raw)
@@ -368,8 +410,8 @@ def build_swaption_trade(
     inst_type = "SWAPTION"
     
     # Check for deprecated inference patterns and fail explicitly
-    has_maturity_only = pos.get("maturity_date") is not None
-    has_expiry = pos.get("expiry_date") is not None or pos.get("expiry_tenor") is not None
+    has_maturity_only = not _is_missing_value(pos.get("maturity_date"))
+    has_expiry = not _is_missing_value(pos.get("expiry_date")) or not _is_missing_value(pos.get("expiry_tenor"))
     
     if has_maturity_only and not has_expiry:
         raise InvalidOptionError(
@@ -380,7 +422,8 @@ def build_swaption_trade(
     
     # Get expiry - MUST be explicit
     expiry_date = _parse_date(pos.get("expiry_date"))
-    expiry_tenor = pos.get("expiry_tenor")
+    expiry_tenor_raw = pos.get("expiry_tenor")
+    expiry_tenor = None if _is_missing_value(expiry_tenor_raw) else str(expiry_tenor_raw).strip()
     
     if expiry_date is None and expiry_tenor is None:
         raise MissingFieldError(position_id, "expiry_date or expiry_tenor", inst_type)
@@ -398,13 +441,16 @@ def build_swaption_trade(
             expiry_tenor = f"{int(round(years))}Y"
     
     # Get underlying swap tenor - MUST be explicit
-    underlying_swap_tenor = pos.get("underlying_swap_tenor") or pos.get("swap_tenor")
+    underlying_swap_tenor_raw = pos.get("underlying_swap_tenor")
+    if _is_missing_value(underlying_swap_tenor_raw):
+        underlying_swap_tenor_raw = pos.get("swap_tenor")
+    underlying_swap_tenor = None if _is_missing_value(underlying_swap_tenor_raw) else str(underlying_swap_tenor_raw).strip()
     if underlying_swap_tenor is None:
         raise MissingFieldError(position_id, "underlying_swap_tenor", inst_type)
     
     # Get payer/receiver - MUST be explicit
     payer_receiver_raw = pos.get("payer_receiver")
-    if payer_receiver_raw is None:
+    if _is_missing_value(payer_receiver_raw):
         raise MissingFieldError(position_id, "payer_receiver", inst_type)
     
     payer_receiver = str(payer_receiver_raw).upper().strip()
@@ -416,22 +462,21 @@ def build_swaption_trade(
     
     # Get position (LONG/SHORT) - MUST be explicit
     position_str = pos.get("position")
-    if position_str is None:
+    if _is_missing_value(position_str):
         # Fallback to direction for backward compatibility, but warn
         position_str = pos.get("direction")
-        if position_str is None:
+        if _is_missing_value(position_str):
             raise MissingFieldError(position_id, "position", inst_type)
     
     position_sign = get_position_sign(position_str)
     
     # Get notional
-    notional_raw = pos.get("notional")
-    if notional_raw is None:
-        raise MissingFieldError(position_id, "notional", inst_type)
+    notional_raw = _require_field(pos, "notional", inst_type)
     notional = float(abs(notional_raw))
     
     # Get strike
-    strike = pos.get("strike", "ATM")
+    strike_raw = pos.get("strike", "ATM")
+    strike = "ATM" if _is_missing_value(strike_raw) else strike_raw
     
     # Optional fields
     vol_type = str(pos.get("vol_type", "NORMAL")).upper()
@@ -507,24 +552,25 @@ def build_caplet_trade(
     
     # Get position (LONG/SHORT) - MUST be explicit
     position_str = pos.get("position")
-    if position_str is None:
+    if _is_missing_value(position_str):
         position_str = pos.get("direction")
-        if position_str is None:
+        if _is_missing_value(position_str):
             raise MissingFieldError(position_id, "position", inst_type)
     
     position_sign = get_position_sign(position_str)
     
     # Get notional
-    notional_raw = pos.get("notional")
-    if notional_raw is None:
-        raise MissingFieldError(position_id, "notional", inst_type)
+    notional_raw = _require_field(pos, "notional", inst_type)
     notional = float(abs(notional_raw))
     
     # Get strike
-    strike = pos.get("strike", "ATM")
+    strike_raw = pos.get("strike", "ATM")
+    strike = "ATM" if _is_missing_value(strike_raw) else strike_raw
     
     # Optional fields
     is_cap = pos.get("is_cap", True)
+    if _is_missing_value(is_cap):
+        is_cap = True
     if isinstance(is_cap, str):
         is_cap = is_cap.upper() in {"TRUE", "CAP", "1", "YES"}
     
@@ -636,6 +682,12 @@ def build_futures_trade(
     notional_raw = pos.get("notional")
     num_contracts_raw = pos.get("num_contracts")
     direction = pos.get("direction")
+    if _is_missing_value(notional_raw):
+        notional_raw = None
+    if _is_missing_value(num_contracts_raw):
+        num_contracts_raw = None
+    if _is_missing_value(direction):
+        direction = None
     
     if notional_raw is not None:
         # notional can be signed (positive=long, negative=short)
@@ -666,10 +718,16 @@ def build_futures_trade(
     tick_value = float(pos.get("tick_value", 6.25))  # $6.25 per 0.25bp for SOFR
     
     # Trade price for P&L calculation (optional)
-    trade_price = pos.get("trade_price") or pos.get("entry_price")
+    trade_price = pos.get("trade_price")
+    if _is_missing_value(trade_price):
+        trade_price = pos.get("entry_price")
+    if _is_missing_value(trade_price):
+        trade_price = None
     if trade_price is not None:
         try:
             trade_price = float(trade_price)
+            if pd.isna(trade_price):
+                trade_price = None
         except (ValueError, TypeError):
             trade_price = None
     
@@ -835,7 +893,7 @@ class PortfolioPricingResult:
         warnings = []
         if self.has_failures:
             warnings.append(
-                f"⚠️ {self.failed_count}/{self.total_positions} positions failed to price "
+                f"{self.failed_count}/{self.total_positions} positions failed to price "
                 f"(coverage: {self.coverage_ratio:.1%})"
             )
             # Group by error type

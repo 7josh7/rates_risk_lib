@@ -289,10 +289,18 @@ def _normalize_strike(
     Convert quote notation (ATM, BPS, absolute) into an absolute strike.
     """
     quote_type = str(quote_type).upper()
+    strike_val = row.get("strike")
+
+    try:
+        if pd.isna(strike_val):
+            return forward if quote_type in {"ATM", "ATMF"} else None
+    except Exception:
+        pass
 
     # Direct strike numeric value
-    if isinstance(row.get("strike"), (int, float)) and quote_type not in {"BPS", "ATM"}:
-        return float(row["strike"])
+    if isinstance(strike_val, (int, float, np.integer, np.floating)) and quote_type not in {"BPS", "ATM", "ATMF"}:
+        numeric = float(strike_val)
+        return numeric if np.isfinite(numeric) else None
 
     # ATM or explicit ATMF label
     if quote_type in {"ATM", "ATMF"}:
@@ -301,17 +309,25 @@ def _normalize_strike(
     # Basis point relative strikes
     if quote_type in {"BPS", "ATM+BPS", "ATM_BP", "ATM+BPS", "ATM-BP"}:
         try:
-            bp = float(row.get("strike", 0.0))
+            bp = float(strike_val)
+            if not np.isfinite(bp):
+                return None
             return forward + bp / 10000.0
         except (TypeError, ValueError):
             return None
 
     # String like "+25BP" or "-50BP"
-    strike_val = row.get("strike")
     if isinstance(strike_val, str) and strike_val.upper().endswith("BP"):
         try:
             bp_val = float(strike_val[:-2])
             return forward + bp_val / 10000.0
+        except ValueError:
+            return None
+
+    if isinstance(strike_val, str):
+        try:
+            numeric = float(strike_val)
+            return numeric if np.isfinite(numeric) else None
         except ValueError:
             return None
 
@@ -351,46 +367,62 @@ def normalize_vol_quotes(
 
     records = []
     for _, row in df_raw.iterrows():
-        instrument = str(row.get(instrument_col, instrument_hint)).upper() if instrument_col else instrument_hint.upper()
-        expiry = str(row[expiry_col]).strip()
-        tenor = str(row[tenor_col]).strip()
-        vol_type = str(row.get("vol_type", "NORMAL")).upper()
-        shift = float(row.get("shift", 0.0))
+        try:
+            instrument = str(row.get(instrument_col, instrument_hint)).upper() if instrument_col else instrument_hint.upper()
+            expiry_val = row[expiry_col]
+            tenor_val = row[tenor_col]
+            if pd.isna(expiry_val) or pd.isna(tenor_val):
+                continue
 
-        forward_info = _compute_forward(instrument, expiry, tenor, curve_state)
-        F0 = forward_info["F0"]
-        T = forward_info["T"]
+            expiry = str(expiry_val).strip()
+            tenor = str(tenor_val).strip()
+            if not expiry or not tenor or expiry.upper() in {"NAN", "NAT"} or tenor.upper() in {"NAN", "NAT"}:
+                continue
 
-        quote_type = str(row.get(strike_type_col, "ATM")).upper() if strike_type_col else "ATM"
-        row_local = row.copy()
-        if strike_val_col:
-            row_local["strike"] = row[strike_val_col]
-        K = _normalize_strike(F0, row_local, quote_type)
+            vol_type = str(row.get("vol_type", "NORMAL")).upper()
+            shift_raw = row.get("shift", 0.0)
+            shift = 0.0 if pd.isna(shift_raw) else float(shift_raw)
+            if not np.isfinite(shift):
+                continue
 
-        if K is None:
-            # Skip malformed rows but annotate decision for the caller
+            forward_info = _compute_forward(instrument, expiry, tenor, curve_state)
+            F0 = forward_info["F0"]
+            T = forward_info["T"]
+
+            quote_type = str(row.get(strike_type_col, "ATM")).upper() if strike_type_col else "ATM"
+            row_local = row.copy()
+            if strike_val_col:
+                row_local["strike"] = row[strike_val_col]
+            K = _normalize_strike(F0, row_local, quote_type)
+
+            if K is None or not np.isfinite(K):
+                continue
+
+            sigma_mkt = float(row[vol_col])
+            if not np.isfinite(sigma_mkt):
+                continue
+
+            bucket = make_bucket_key(expiry, tenor)
+
+            records.append(
+                {
+                    "instrument": instrument,
+                    "expiry": expiry,
+                    "tenor": tenor,
+                    "bucket_key": bucket,
+                    "T": T,
+                    "F0": F0,
+                    "K": K,
+                    "sigma_mkt": sigma_mkt,
+                    "vol_type": vol_type,
+                    "shift": shift,
+                    "quote_type": quote_type,
+                    "quote_value": row_local.get("strike", 0.0),
+                    "source": row.get("source"),
+                }
+            )
+        except Exception:
             continue
-
-        sigma_mkt = float(row[vol_col])
-        bucket = make_bucket_key(expiry, tenor)
-
-        records.append(
-            {
-                "instrument": instrument,
-                "expiry": expiry,
-                "tenor": tenor,
-                "bucket_key": bucket,
-                "T": T,
-                "F0": F0,
-                "K": K,
-                "sigma_mkt": sigma_mkt,
-                "vol_type": vol_type,
-                "shift": shift,
-                "quote_type": quote_type,
-                "quote_value": row_local.get("strike", 0.0),
-                "source": row.get("source"),
-            }
-        )
 
     return pd.DataFrame(records)
 

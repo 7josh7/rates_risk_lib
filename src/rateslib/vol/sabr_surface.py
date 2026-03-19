@@ -23,6 +23,19 @@ def make_bucket_key(expiry: str, tenor: str) -> BucketKey:
     return (str(expiry).upper(), str(tenor).upper())
 
 
+def _bucket_axis_to_years(value: Any) -> float:
+    """Convert either a tenor label or numeric year value to years."""
+    if isinstance(value, (int, float, np.integer, np.floating)):
+        return float(value)
+    if isinstance(value, str):
+        stripped = value.strip()
+        try:
+            return float(stripped)
+        except ValueError:
+            return DateUtils.tenor_to_years(stripped)
+    return DateUtils.tenor_to_years(value)
+
+
 @dataclass
 class SabrBucketParams:
     """SABR parameters and diagnostics for a single bucket."""
@@ -92,8 +105,8 @@ class SabrSurfaceState:
             return None
 
         # Nearest neighbour by Euclidean distance in (expiry years, tenor years)
-        target_expiry = DateUtils.tenor_to_years(expiry)
-        target_tenor = DateUtils.tenor_to_years(tenor)
+        target_expiry = _bucket_axis_to_years(expiry)
+        target_tenor = _bucket_axis_to_years(tenor)
 
         best_key: Optional[BucketKey] = None
         best_dist = float("inf")
@@ -102,8 +115,8 @@ class SabrSurfaceState:
             # Skip wildcard buckets like ("ALL", "ALL") in distance calculation
             if "ALL" in candidate:
                 continue
-            cand_expiry = DateUtils.tenor_to_years(candidate[0])
-            cand_tenor = DateUtils.tenor_to_years(candidate[1])
+            cand_expiry = _bucket_axis_to_years(candidate[0])
+            cand_tenor = _bucket_axis_to_years(candidate[1])
             dist = np.sqrt((cand_expiry - target_expiry) ** 2 + (cand_tenor - target_tenor) ** 2)
             if dist < best_dist:
                 best_dist = dist

@@ -259,7 +259,7 @@ class OISBootstrapper:
         return fwd_rate
     
     def _reprice_future(self, curve: Curve, inst: Future) -> float:
-        """Reprice future - return implied rate."""
+        """Reprice future using the curve and return the quote in the instrument's convention."""
         t1 = inst.maturity_time(self.anchor_date)
         t2 = t1 + 0.25  # 3-month forward
         
@@ -270,9 +270,12 @@ class OISBootstrapper:
             return 0.0
         
         fwd_rate = (df1 / df2 - 1.0) / 0.25
-        
-        # Convert to futures price convention
-        return inst.implied_rate()  # Compare to rate, not price
+
+        # Match the input quote convention so verification compares like-with-like.
+        if str(inst.quote_type).upper() == "RATE" and inst.quote <= 1.0:
+            return fwd_rate
+
+        return 100.0 - fwd_rate * 100.0
 
 
 def bootstrap_from_quotes(
@@ -329,7 +332,8 @@ def bootstrap_from_quotes(
             instruments.append(Future(
                 tenor=tenor,
                 quote=quote,
-                day_count=day_count
+                day_count=day_count,
+                quote_type=str(q.get("quote_type", "RATE" if quote <= 1.0 else "PRICE")),
             ))
     
     bootstrapper = OISBootstrapper(

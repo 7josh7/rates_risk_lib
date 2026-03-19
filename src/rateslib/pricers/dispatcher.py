@@ -342,6 +342,7 @@ def risk_trade(trade: Dict[str, Any], market_state: MarketState, method: str = "
         expiry_tenor = trade["expiry_tenor"]
         swap_tenor = trade["swap_tenor"]
         strike_raw = trade.get("strike")
+        payer_receiver = str(trade.get("payer_receiver", "PAYER")).upper()
         notional = float(trade.get("notional", 1.0))
         vol_type = str(trade.get("vol_type", "NORMAL")).upper()
 
@@ -379,7 +380,7 @@ def risk_trade(trade: Dict[str, Any], market_state: MarketState, method: str = "
             T=T,
             sabr_params=sabr_params.to_sabr_params(),
             annuity=annuity,
-            is_call=True,
+            is_call=(payer_receiver == "PAYER"),
             notional=notional,
         )
         greeks = pricer.greeks(
@@ -389,7 +390,7 @@ def risk_trade(trade: Dict[str, Any], market_state: MarketState, method: str = "
             annuity=annuity,
             vol=implied_vol,
             vol_type=vol_type,
-            payer_receiver="PAYER",
+            payer_receiver=payer_receiver,
             notional=notional,
         )
         return {"sabr_sensitivities": sens, "forward": forward, "annuity": annuity, "greeks": greeks}
@@ -428,6 +429,12 @@ def risk_trade(trade: Dict[str, Any], market_state: MarketState, method: str = "
         if strike <= 0:
             strike = max(forward, 1e-6)
         risk_engine = SabrOptionRisk(vol_type=vol_type)
+        from ..vol.sabr import SabrModel
+        model = SabrModel()
+        if vol_type == "NORMAL":
+            implied_vol = model.implied_vol_normal(forward, strike, start, sabr_params.to_sabr_params())
+        else:
+            implied_vol = model.implied_vol_black(forward, strike, start, sabr_params.to_sabr_params())
         sens = risk_engine.parameter_sensitivities(
             F=forward,
             K=strike,
@@ -437,7 +444,18 @@ def risk_trade(trade: Dict[str, Any], market_state: MarketState, method: str = "
             is_call=trade.get("is_cap", True),
             notional=notional,
         )
-        return {"sabr_sensitivities": sens, "forward": forward, "annuity": annuity}
+        greeks = pricer.greeks(
+            F=forward,
+            K=strike,
+            T=start,
+            df=annuity,
+            vol=implied_vol,
+            vol_type=vol_type,
+            notional=notional,
+            delta_t=delta_t or 0.25,
+            is_cap=trade.get("is_cap", True),
+        )
+        return {"sabr_sensitivities": sens, "forward": forward, "annuity": annuity, "greeks": greeks}
 
     return {}
 

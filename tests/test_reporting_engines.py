@@ -19,6 +19,7 @@ from rateslib.risk.reporting import (
     CurveRiskMetrics,
     build_var_portfolio_pricer,
     VaRCoverageInfo,
+    _parse_date,
 )
 from rateslib.var.scenarios import (
     run_scenario_set,
@@ -174,9 +175,39 @@ class TestComputeCurveRiskMetrics:
         # A rough check: for $6M notional across multiple bonds, expect DV01 in reasonable range
         total_notional = bond_portfolio_df['notional'].sum()
         dv01_per_notional = abs(result.total_dv01) / total_notional * 100  # per $100
-        
+
         assert 0.001 < dv01_per_notional < 1.0, \
             f"DV01 per $100 notional = {dv01_per_notional:.6f} seems out of expected range for $ per 1bp"
+
+    def test_price_failures_reduce_reported_coverage(self, sample_market_state):
+        """Test that trades that fail during pricing are excluded from coverage."""
+        bad_option_df = pd.DataFrame({
+            "position_id": ["OPT_BAD"],
+            "instrument_type": ["SWAPTION"],
+            "notional": [1_000_000],
+            "direction": ["LONG"],
+            "expiry_tenor": ["BAD"],
+            "underlying_swap_tenor": ["5Y"],
+            "payer_receiver": ["PAYER"],
+            "position": ["LONG"],
+            "strike": ["ATM"],
+        })
+
+        result = compute_curve_risk_metrics(
+            positions_df=bad_option_df,
+            market_state=sample_market_state,
+            valuation_date=date(2024, 1, 15),
+            use_explicit_builders=True,
+        )
+
+        assert result.instrument_coverage == 0
+        assert result.coverage_ratio == 0.0
+        assert result.has_failures is True
+        assert len(result.failed_trades) >= 1
+
+    def test_internal_parse_date_returns_none_for_nat(self):
+        """Internal reporting helper should normalize pandas NaT to None."""
+        assert _parse_date(pd.NaT) is None
 
 
 class TestRunScenarioSet:

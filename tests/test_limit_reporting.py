@@ -63,3 +63,29 @@ def test_evaluate_limits_with_overrides_no_missing():
     assert statuses["option_delta"] != "Missing"
     # Metrics without computation should be marked Not Computed
     assert statuses["var_95"] == "Not Computed"
+
+
+def test_compute_limit_metrics_nets_offsetting_bond_dv01():
+    ms = build_market_state()
+    positions = pd.DataFrame([
+        {
+            "position_id": "BOND_LONG",
+            "instrument_type": "UST",
+            "notional": 1_000_000,
+            "direction": "LONG",
+            "coupon": 0.04,
+            "maturity_date": date(2029, 1, 15),
+        },
+        {
+            "position_id": "BOND_SHORT",
+            "instrument_type": "UST",
+            "notional": 1_000_000,
+            "direction": "SHORT",
+            "coupon": 0.04,
+            "maturity_date": date(2029, 1, 15),
+        },
+    ])
+
+    metrics, _ = compute_limit_metrics(ms, positions, date(2024, 1, 15))
+
+    assert abs(metrics["total_dv01"]) < 1e-8

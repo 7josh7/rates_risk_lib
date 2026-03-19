@@ -16,6 +16,7 @@ from rateslib.curves import (
     create_flat_curve,
     bootstrap_from_quotes,
 )
+from rateslib.curves.instruments import Future, _interpolate_df
 
 
 class TestInterpolators:
@@ -192,6 +193,26 @@ class TestOISBootstrap:
         dfs = result.get_node_dfs()
         for i in range(1, len(dfs)):
             assert dfs[i] < dfs[i-1], "DFs should be monotonically decreasing"
+
+    def test_future_repricing_uses_curve_implied_quote(self):
+        """Test futures repricing compares against the curve-implied quote, not the input quote."""
+        anchor_date = date(2024, 1, 15)
+        curve = create_flat_curve(anchor_date, rate=0.05, max_tenor_years=5.0)
+        bootstrapper = OISBootstrapper(anchor_date)
+        future = Future(tenor="1Y", quote=99.0)
+
+        repriced = bootstrapper._reprice_future(curve, future)
+        t1 = future.maturity_time(anchor_date)
+        expected_rate = (curve.discount_factor(t1) / curve.discount_factor(t1 + 0.25) - 1.0) / 0.25
+        expected_price = 100.0 - expected_rate * 100.0
+
+        assert abs(repriced - expected_price) < 1e-10
+        assert abs(repriced - future.quote) > 1e-6
+
+    def test_interpolate_df_rejects_nonpositive_discount_factors(self):
+        """Internal DF interpolation should fail fast on invalid discount factors."""
+        with pytest.raises(ValueError, match="strictly positive"):
+            _interpolate_df(1.5, [(1.0, 1.0), (2.0, 0.0)])
 
 
 class TestNSS:

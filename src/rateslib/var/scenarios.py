@@ -176,6 +176,22 @@ STANDARD_SCENARIOS = {
 }
 
 
+def _historical_to_pivot(historical_data: pd.DataFrame) -> pd.DataFrame:
+    """Normalize historical data to a date-by-tenor rate matrix."""
+    df = historical_data.copy()
+
+    # Accept wide format (date + tenor columns) by melting to long first.
+    if "rate" not in df.columns and "date" in df.columns:
+        value_cols = [c for c in df.columns if c.lower() != "date"]
+        df = df.melt(id_vars="date", value_vars=value_cols, var_name="tenor", value_name="rate")
+
+    if "date" in df.columns:
+        df["date"] = pd.to_datetime(df["date"])
+        return df.pivot_table(index="date", columns="tenor", values="rate")
+
+    return df
+
+
 class ScenarioEngine:
     """
     Engine for running scenario analysis.
@@ -269,13 +285,7 @@ class ScenarioEngine:
         Returns:
             ScenarioResult
         """
-        df = historical_data.copy()
-        
-        if 'date' in df.columns:
-            df['date'] = pd.to_datetime(df['date'])
-            pivot = df.pivot_table(index='date', columns='tenor', values='rate')
-        else:
-            pivot = df
+        pivot = _historical_to_pivot(historical_data)
         
         # Get rate changes for scenario date
         changes = pivot.diff() * 10000  # Convert to bp
@@ -317,13 +327,7 @@ class ScenarioEngine:
         Returns:
             List of ScenarioResults (worst first)
         """
-        df = historical_data.copy()
-        
-        if 'date' in df.columns:
-            df['date'] = pd.to_datetime(df['date'])
-            pivot = df.pivot_table(index='date', columns='tenor', values='rate')
-        else:
-            pivot = df
+        pivot = _historical_to_pivot(historical_data)
         
         # Compute P&L for each historical day
         changes = pivot.diff() * 10000

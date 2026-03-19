@@ -203,6 +203,33 @@ class TestScenarioEngine:
         assert result.scenario.name == "Custom Test"
         assert result.pnl != 0
 
+    def test_run_historical_scenario_accepts_wide_format(self, sample_curve, historical_data):
+        """Historical scenario lookup should work with wide-format input."""
+        def simple_pricer(curve):
+            anchor = curve.anchor_date
+            return curve.discount_factor(anchor + timedelta(days=365)) * 1_000_000
+
+        engine = ScenarioEngine(sample_curve, simple_pricer)
+        scenario_date = historical_data.index[10].date()
+
+        result = engine.run_historical_scenario(historical_data, scenario_date)
+
+        assert result.scenario.name.startswith("Historical")
+        assert isinstance(result.pnl, float)
+
+    def test_find_worst_historical_scenarios_accepts_wide_format(self, sample_curve, historical_data):
+        """Worst historical scenario scan should work with wide-format input."""
+        def simple_pricer(curve):
+            anchor = curve.anchor_date
+            return curve.discount_factor(anchor + timedelta(days=365)) * 1_000_000
+
+        engine = ScenarioEngine(sample_curve, simple_pricer)
+
+        results = engine.find_worst_historical_scenarios(historical_data, n=3)
+
+        assert len(results) == 3
+        assert results[0].pnl <= results[-1].pnl
+
 
 class TestScenarioFuturesSupport:
     """Tests for FUT position handling in scenarios."""

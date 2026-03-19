@@ -761,14 +761,14 @@ def main():
         
         with col1:
             st.subheader("OIS Curve Bootstrap")
-            st.dataframe(ois_quotes.style.format({'rate': '{:.4%}'}), width="stretch")
+            st.dataframe(ois_quotes.style.format({'rate': '{:.4%}'}), use_container_width=True)
             
             st.metric("Number of Instruments", len(ois_quotes))
             st.metric("Curve Nodes", len(ois_curve.get_nodes()))
             
         with col2:
             st.subheader("Treasury NSS Parameters")
-            st.dataframe(treasury_quotes.style.format({'yield': '{:.4%}'}), width="stretch")
+            st.dataframe(treasury_quotes.style.format({'yield': '{:.4%}'}), use_container_width=True)
             
             st.write("**NSS Fitted Parameters:**")
             st.write(f"β₀ (level): {nss_model.params.beta0:.6f}")
@@ -780,13 +780,13 @@ def main():
             
         #st.success("✓ NSS parameters shown and accessible (checklist item 10.2)")
         
-        st.plotly_chart(plot_curve_comparison(ois_curve, treasury_curve, valuation_date), width="stretch")
+        st.plotly_chart(plot_curve_comparison(ois_curve, treasury_curve, valuation_date), use_container_width=True)
         
         col1, col2 = st.columns(2)
         with col1:
-            st.plotly_chart(plot_discount_factors(ois_curve, treasury_curve, valuation_date), width="stretch")
+            st.plotly_chart(plot_discount_factors(ois_curve, treasury_curve, valuation_date), use_container_width=True)
         with col2:
-            st.plotly_chart(plot_forward_rates(ois_curve, valuation_date, 'OIS Forward Rates'), width="stretch")
+            st.plotly_chart(plot_forward_rates(ois_curve, valuation_date, 'OIS Forward Rates'), use_container_width=True)
         
         # SABR Surface Display
         if market_state.sabr_surface is not None:
@@ -812,7 +812,7 @@ def main():
                     "rmse": "{:.6f}",
                     "max_abs_error": "{:.6f}",
                 }),
-                width="stretch",
+                use_container_width=True,
             )
             
             # Parameter bounds display
@@ -909,7 +909,7 @@ def main():
                     height=450,
                     margin=dict(r=150)
                 )
-                st.plotly_chart(vol_fig, width="stretch")
+                st.plotly_chart(vol_fig, use_container_width=True)
             
             # Surface heatmap (if multiple buckets)
             if len(bucket_keys) > 1:
@@ -945,7 +945,7 @@ def main():
                     yaxis_title="Option Expiry",
                     height=350
                 )
-                st.plotly_chart(heatmap_fig, width="stretch")
+                st.plotly_chart(heatmap_fig, use_container_width=True)
             
             #st.success("✓ SABR implied vol curves visualized by bucket")
     
@@ -1159,7 +1159,7 @@ def main():
                             "max_abs_error": "{:.6f}",
                         }
                     ),
-                    width="stretch",
+                    use_container_width=True,
                 )
 
                 if risk_result:
@@ -1229,7 +1229,7 @@ def main():
                         "Stage": f.stage,
                         "Error": f.error_message[:100] + "..." if len(f.error_message) > 100 else f.error_message,
                     })
-                st.dataframe(pd.DataFrame(failure_data), width="stretch")
+                st.dataframe(pd.DataFrame(failure_data), use_container_width=True)
         
         st.caption(f"Instruments priced: {curve_risk.instrument_coverage}/{curve_risk.total_instruments}")
         
@@ -1239,13 +1239,13 @@ def main():
         
         kr_df = curve_risk.to_dataframe()
         
-        st.plotly_chart(plot_key_rate_ladder(kr_df), width="stretch")
+        st.plotly_chart(plot_key_rate_ladder(kr_df), use_container_width=True)
         
         # Show detail table
         with st.expander("Key-Rate DV01 Detail"):
             st.dataframe(
                 kr_df.style.format({'DV01': '${:,.2f}'}),
-                width="stretch"
+                use_container_width=True
             )
             st.caption("Unit: $ per 1bp bump at each tenor")
         
@@ -1271,7 +1271,7 @@ def main():
                 diag_df.style.format(
                     {"sigma_atm": "{:.5f}", "nu": "{:.4f}", "rho": "{:.3f}", "rmse": "{:.6f}"}
                 ),
-                width="stretch",
+                use_container_width=True,
             )
 
         # Limit checks
@@ -1314,7 +1314,7 @@ def main():
         limit_results = evaluate_limits(metrics_for_limits, DEFAULT_LIMITS, status_overrides=status_overrides)
         table = render_limit_table(limit_results)
         if table is not None:
-            st.dataframe(table, width="stretch")
+            st.dataframe(table, use_container_width=True)
     
     # =========================================================================
     # TAB 4: VaR Analysis
@@ -1397,7 +1397,7 @@ def main():
                 col4.metric(f"ES 99%{var_label_suffix}", f"${var_result.es_99:,.0f}")
                 st.plotly_chart(
                     plot_var_distribution(var_result.pnl_distribution, var_result.var_95, var_result.var_99),
-                    width="stretch",
+                    use_container_width=True,
                 )
                 var_results_payload = {
                     "var_95": var_result.var_95,
@@ -1427,7 +1427,7 @@ def main():
                 col4.metric(f"ES 99%{var_label_suffix}", f"${mc_result.es_99:,.0f}")
                 st.plotly_chart(
                     plot_var_distribution(mc_result.pnl_distribution, mc_result.var_95, mc_result.var_99),
-                    width="stretch",
+                    use_container_width=True,
                 )
                 var_results_payload = {
                     "var_95": mc_result.var_95,
@@ -1536,7 +1536,7 @@ def main():
                             'Option P&L Change': '${:,.0f}',
                             'ES 97.5% Est': '${:,.0f}'
                         }),
-                        width="stretch"
+                        use_container_width=True
                     )
                     st.caption(f"Based on {tail_stress.get('option_count', 0)} option positions via actual repricing")
                 else:
@@ -1567,7 +1567,7 @@ def main():
                             'Receiver P&L': '${:,.0f}',
                             'Asymmetry': '${:,.0f}'
                         }),
-                        width="stretch"
+                        use_container_width=True
                     )
                     st.caption(f"Payers: {tail_stress.get('payer_count', 0)}, Receivers: {tail_stress.get('receiver_count', 0)}")
                 else:
@@ -1601,7 +1601,7 @@ def main():
             
             st.dataframe(
                 comparison_df.style.format({'VaR 95%': '${:,.0f}', 'ES 97.5%': '${:,.0f}', 'ES/VaR Ratio': '{:.2f}'}),
-                width="stretch"
+                use_container_width=True
             )
             
             # Flat vol vs SABR comparison (computed from actual repricing)
@@ -1659,7 +1659,7 @@ def main():
         ])
         
         with st.expander("View Full Scenario Definitions", expanded=False):
-            st.dataframe(defs_df, width="stretch")
+            st.dataframe(defs_df, use_container_width=True)
         
         #st.success("✓ Scenario definitions are explicit and visible (checklist item 10.2)")
         
@@ -1697,7 +1697,7 @@ def main():
                             "Stage": f.stage,
                             "Error": f.error_message[:80] + "..." if len(f.error_message) > 80 else f.error_message,
                         })
-                    st.dataframe(pd.DataFrame(failure_data), width="stretch")
+                    st.dataframe(pd.DataFrame(failure_data), use_container_width=True)
             
             curve_scenarios_df = scenarios_to_dataframe(scenario_results)
             curve_scenarios_df = curve_scenarios_df.rename(columns={"P&L": "P&L"})
@@ -1707,7 +1707,7 @@ def main():
                 curve_scenarios_df.style.format({'P&L': '${:,.0f}'}).background_gradient(
                     subset=['P&L'], cmap='RdYlGn', vmin=curve_scenarios_df['P&L'].min(), vmax=curve_scenarios_df['P&L'].max()
                 ),
-                width="stretch"
+                use_container_width=True
             )
             
             # Show computation method info
@@ -1752,7 +1752,7 @@ def main():
                         'Linear P&L': '${:,.0f}',
                         'Total P&L': '${:,.0f}'
                     }),
-                    width="stretch"
+                    use_container_width=True
                 )
                 
                 # Show that linear P&L is ~0 (as expected)
@@ -1805,7 +1805,7 @@ def main():
                     'Full Reprice': '${:,.0f}',
                     'Residual (Cross-Gamma)': '${:,.0f}'
                 }),
-                width="stretch"
+                use_container_width=True
             )
             
             st.caption("Combined P&L = Curve Component + Vol Component. Cross-gamma captured in residual.")
@@ -1858,11 +1858,11 @@ def main():
         scenario_limits = evaluate_limits(scenario_limit_metrics, DEFAULT_LIMITS, status_overrides=scenario_status_overrides)
         scen_table = render_limit_table(scenario_limits)
         if scen_table is not None:
-            st.dataframe(scen_table, width="stretch")
+            st.dataframe(scen_table, use_container_width=True)
         
         # Waterfall chart
         if not curve_scenarios_df.empty and 'P&L' in curve_scenarios_df.columns:
-            st.plotly_chart(plot_scenario_waterfall(curve_scenarios_df), width="stretch")
+            st.plotly_chart(plot_scenario_waterfall(curve_scenarios_df), use_container_width=True)
         
         # =================================================================
         # Enhanced Custom Scenario Builder with NSS + SABR Parameter Tweaking
@@ -1960,7 +1960,7 @@ def main():
                 legend=dict(x=0.7, y=0.95),
                 height=400
             )
-            st.plotly_chart(nss_fig, width="stretch")
+            st.plotly_chart(nss_fig, use_container_width=True)
             
             # Show parameter delta
             st.markdown("**Parameter Changes**")
@@ -1973,7 +1973,7 @@ def main():
             })
             st.dataframe(param_delta_df.style.format({
                 "Base": "{:.6f}", "Stressed": "{:.6f}", "Change": "{:+.6f}"
-            }), width="stretch")
+            }), use_container_width=True)
         
         with scenario_tab3:
             st.markdown("**SABR Volatility Surface Parameters**")
@@ -2018,7 +2018,7 @@ def main():
                     "Base σ_ATM": "{:.5f}", "Stressed σ_ATM": "{:.5f}",
                     "Base ν": "{:.4f}", "Stressed ν": "{:.4f}",
                     "Base ρ": "{:.3f}", "Stressed ρ": "{:.3f}",
-                }), width="stretch")
+                }), use_container_width=True)
                 
                 # Implied vol curve visualization
                 st.markdown("**Implied Volatility Smile Preview**")
@@ -2087,7 +2087,7 @@ def main():
                         legend=dict(x=0.7, y=0.95),
                         height=400
                     )
-                    st.plotly_chart(smile_fig, width="stretch")
+                    st.plotly_chart(smile_fig, use_container_width=True)
         
         #st.success("✓ Stress severity is configurable (checklist item 6.2)")
         #st.success("✓ NSS and SABR parameters directly editable with curve visualization")
@@ -2323,7 +2323,7 @@ def main():
                                     "Stage": f.stage,
                                     "Error": f.error_message[:60] + "..." if len(f.error_message) > 60 else f.error_message,
                                 })
-                            st.dataframe(pd.DataFrame(failure_data), width="stretch")
+                            st.dataframe(pd.DataFrame(failure_data), use_container_width=True)
                     
                     st.success("✅ Custom scenario executed successfully!")
                     
@@ -2377,7 +2377,7 @@ def main():
         col3.metric("Residual", f"${pnl_comp_linear.residual:,.0f}")
         
         # Attribution breakdown
-        st.plotly_chart(plot_pnl_attribution(pnl_comp_linear), width="stretch")
+        st.plotly_chart(plot_pnl_attribution(pnl_comp_linear), use_container_width=True)
         
         # Detailed breakdown table
         attribution_df_linear = pd.DataFrame({
@@ -2393,7 +2393,7 @@ def main():
             attribution_df_linear.style.format({'P&L ($)': '${:,.2f}'}).background_gradient(
                 subset=['P&L ($)'], cmap='RdYlGn'
             ),
-            width="stretch"
+            use_container_width=True
         )
         
         #st.success("✓ Curve-only P&L computed correctly (checklist item 8.1)")
@@ -2482,7 +2482,7 @@ def main():
                     }).background_gradient(
                         subset=['P&L ($)'], cmap='RdYlGn'
                     ),
-                    width="stretch"
+                    use_container_width=True
                 )
                 
                 st.caption(f"Based on {agg['position_count']} option positions with actual SABR Greeks")
@@ -2498,7 +2498,7 @@ def main():
                         'Volatility exposure'
                     ]
                 })
-                st.dataframe(greeks_df.style.format({'Value': '{:,.2f}'}), width="stretch")
+                st.dataframe(greeks_df.style.format({'Value': '{:,.2f}'}), use_container_width=True)
             else:
                 st.info("No option positions found for attribution analysis")
             
@@ -2533,7 +2533,7 @@ def main():
                     ]
                 })
                 
-                st.dataframe(quality_df, width="stretch")
+                st.dataframe(quality_df, use_container_width=True)
                 
                 if residual_val > threshold_val:
                     st.warning(f"⚠️ Large residual detected: ${residual_val:,.0f} exceeds threshold of ${threshold_val}")
@@ -2604,8 +2604,8 @@ def main():
                 height=400
             )
             
-            st.plotly_chart(fig, width="stretch")
-            # plotly_chart now prefers width="stretch" in Streamlit >=1.52
+            st.plotly_chart(fig, use_container_width=True)
+            # use_container_width remains compatible across older/newer Streamlit versions
         
         # Liquidity metrics by instrument
         st.subheader("Liquidity Metrics by Instrument Type")
@@ -2616,7 +2616,7 @@ def main():
             'Est. Liq. Time (days)': [1, 1, 1, 2, 2, 3, 1]
         })
         
-        st.dataframe(liquidity_df, width="stretch")
+        st.dataframe(liquidity_df, use_container_width=True)
     
     # =========================================================================
     # TAB 8: Data Explorer
@@ -2630,14 +2630,14 @@ def main():
         
         if data_view == "Market Quotes":
             st.subheader("OIS Quotes")
-            st.dataframe(ois_quotes, width="stretch")
+            st.dataframe(ois_quotes, use_container_width=True)
             
             st.subheader("Treasury Quotes")
-            st.dataframe(treasury_quotes, width="stretch")
+            st.dataframe(treasury_quotes, use_container_width=True)
         
         elif data_view == "Portfolio Positions":
             st.subheader("Current Portfolio Positions")
-            st.dataframe(positions_df, width="stretch")
+            st.dataframe(positions_df, use_container_width=True)
             
             # Download button
             csv = positions_df.to_csv(index=False)
@@ -2650,7 +2650,7 @@ def main():
         
         elif data_view == "Historical Rates":
             st.subheader("Historical Rate Data")
-            st.dataframe(historical_rates.head(20), width="stretch")
+            st.dataframe(historical_rates.head(20), use_container_width=True)
             st.info(f"Total historical observations: {len(historical_rates)}")
         
         elif data_view == "Curve Nodes":
@@ -2671,7 +2671,7 @@ def main():
                 })
             
             nodes_df = pd.DataFrame(nodes_data)
-            st.dataframe(nodes_df, width="stretch")
+            st.dataframe(nodes_df, use_container_width=True)
     
 
 
