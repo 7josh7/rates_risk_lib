@@ -35,7 +35,7 @@ class BondCashflow:
     date: date
     amount: float  # In currency units for face=100
     type: str  # "COUPON", "PRINCIPAL", "COUPON+PRINCIPAL"
-    year_fraction: float  # Time from settlement
+    year_fraction: float  # Time from curve anchor
 
 
 @dataclass
@@ -124,8 +124,8 @@ class BondPricer:
         cashflows = []
         
         for i, (pmt_date, yf) in enumerate(zip(schedule.payment_dates, schedule.year_fractions)):
-            # Year fraction from settlement
-            t = year_fraction(settlement, pmt_date, self.conventions.day_count)
+            # Discounting is always from the curve anchor/valuation date.
+            t = year_fraction(self.curve.anchor_date, pmt_date, self.curve.day_count)
             coupon_payment = face_value * coupon_rate * yf
             
             if i == len(schedule.payment_dates) - 1:
@@ -247,8 +247,7 @@ class BondPricer:
         Returns:
             Price
         """
-        t = year_fraction(settlement, maturity, self.conventions.day_count)
-        df = self.curve.discount_factor(t)
+        df = self.curve.discount_factor(maturity)
         return face_value * df
     
     def yield_to_maturity(
@@ -413,8 +412,7 @@ def price_zero_coupon_bond(
     Returns:
         Bond price
     """
-    t = year_fraction(settlement, maturity, day_count)
-    df = curve.discount_factor(t)
+    df = curve.discount_factor(maturity)
     return face_value * df
 
 

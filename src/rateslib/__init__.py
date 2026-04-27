@@ -85,6 +85,12 @@ from .var import (
     StressedVaR,
     ScenarioEngine,
     STANDARD_SCENARIOS,
+    VaRBacktestResult,
+    backtest_var,
+    kupiec_pof_test,
+    christoffersen_independence_test,
+    traffic_light,
+    rolling_historical_var_backtest,
 )
 
 # P&L
@@ -216,6 +222,12 @@ __all__ = [
     "StressedVaR",
     "ScenarioEngine",
     "STANDARD_SCENARIOS",
+    "VaRBacktestResult",
+    "backtest_var",
+    "kupiec_pof_test",
+    "christoffersen_independence_test",
+    "traffic_light",
+    "rolling_historical_var_backtest",
     # P&L
     "PnLAttributionEngine",
     "PnLAttribution",

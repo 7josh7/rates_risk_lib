@@ -11,9 +11,12 @@ from rateslib.curves import Curve, create_flat_curve
 from rateslib.var import (
     HistoricalSimulation,
     MonteCarloVaR,
+    VaRBacktestResult,
     ScenarioEngine,
     Scenario,
     STANDARD_SCENARIOS,
+    backtest_var,
+    rolling_historical_var_backtest,
 )
 
 
@@ -127,6 +130,48 @@ class TestMonteCarloVaR:
         assert var_95 > 0
         assert var_99 > 0
         assert var_99 > var_95  # 99% VaR should be higher
+
+
+class TestVaRBacktesting:
+    """Tests for VaR backtesting utilities."""
+
+    def test_backtest_var_counts_pnl_exceptions(self):
+        pnl = pd.Series([-5.0, -12.0, 3.0, -2.0])
+        var = pd.Series([10.0, 10.0, 10.0, 10.0])
+
+        result = backtest_var(pnl, var, confidence=0.75)
+
+        assert isinstance(result, VaRBacktestResult)
+        assert result.observations == 4
+        assert result.exceptions_count == 1
+        assert result.expected_exceptions == pytest.approx(1.0)
+        assert result.exceptions.tolist() == [False, True, False, False]
+
+    def test_backtest_var_accepts_loss_series(self):
+        losses = [5.0, 12.0, 3.0]
+        var = [10.0, 10.0, 10.0]
+
+        result = backtest_var(losses, var, confidence=0.95, pnl_is_loss=True)
+
+        assert result.exceptions_count == 1
+        assert result.exceptions.tolist() == [False, True, False]
+
+    def test_rolling_historical_var_backtest(self, sample_curve, historical_data):
+        def simple_pricer(curve):
+            anchor = curve.anchor_date
+            return curve.discount_factor(anchor + timedelta(days=365)) * 1_000_000
+
+        result = rolling_historical_var_backtest(
+            base_curve=sample_curve,
+            historical_data=historical_data,
+            pricer_func=simple_pricer,
+            confidence=0.95,
+            lookback_days=20,
+        )
+
+        assert result.observations == 39
+        assert result.exceptions_count >= 0
+        assert {"pnl", "var", "exception"}.issubset(result.exceptions_table().columns)
 
 
 class TestScenarioEngine:

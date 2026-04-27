@@ -56,6 +56,7 @@ class HistoricalVaRResult:
     mean_pnl: float
     pnl_distribution: np.ndarray = field(repr=False)
     scenario_dates: Optional[List[date]] = None
+    skipped_scenarios: int = 0
     
     def to_dict(self) -> Dict:
         """Convert to dictionary for reporting."""
@@ -67,7 +68,8 @@ class HistoricalVaRResult:
             "num_scenarios": self.num_scenarios,
             "worst_loss": self.worst_loss,
             "best_gain": self.best_gain,
-            "mean_pnl": self.mean_pnl
+            "mean_pnl": self.mean_pnl,
+            "skipped_scenarios": self.skipped_scenarios,
         }
 
 
@@ -123,11 +125,17 @@ class HistoricalSimulation:
         
         # Filter to tenors we care about
         available_tenors = [t for t in self.tenors if t in pivot.columns]
+        if not available_tenors:
+            raise ValueError("No requested risk-factor tenors are present in historical_data.")
         pivot = pivot[available_tenors].dropna()
+        if pivot.shape[0] < 2:
+            raise ValueError("Need at least two complete historical observations for historical VaR.")
         
         # Compute 1-day changes in basis points
         self.rate_changes = pivot.diff() * 10000  # Convert to bp
         self.rate_changes = self.rate_changes.dropna()
+        if self.rate_changes.empty:
+            raise ValueError("No historical rate changes available after differencing.")
         
         self.available_tenors = available_tenors
         self.scenario_dates = self.rate_changes.index.tolist()
@@ -177,6 +185,7 @@ class HistoricalSimulation:
         # Run scenarios
         pnl_distribution = []
         scenario_dates = []
+        skipped_scenarios = 0
         
         for idx, row in changes.iterrows():
             try:
@@ -185,8 +194,9 @@ class HistoricalSimulation:
                 pnl = shocked_pv - base_pv
                 pnl_distribution.append(pnl)
                 scenario_dates.append(idx)
-            except Exception as e:
+            except Exception:
                 # Skip problematic scenarios
+                skipped_scenarios += 1
                 continue
         
         pnl_array = np.array(pnl_distribution)
@@ -216,7 +226,8 @@ class HistoricalSimulation:
             best_gain=np.max(pnl_array),
             mean_pnl=np.mean(pnl_array),
             pnl_distribution=pnl_array,
-            scenario_dates=scenario_dates
+            scenario_dates=scenario_dates,
+            skipped_scenarios=skipped_scenarios,
         )
     
     def run_parametric_var(

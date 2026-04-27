@@ -117,7 +117,7 @@ class KeyRateEngine:
                 bumped_curve = self._create_localized_bump(tenor)
             
             pv_bumped = pricer_func(bumped_curve)
-            dv01 = (pv_bumped - pv_base) / self.bump_size
+            dv01 = -(pv_bumped - pv_base) / self.bump_size
             dv01s[tenor] = dv01
         
         total_dv01 = sum(dv01s.values())

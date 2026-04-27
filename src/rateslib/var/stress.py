@@ -140,10 +140,11 @@ class StressedVaR:
                    (df.index <= pd.Timestamp(self.stress_period_end))
             self.stress_data = df[mask].copy()
 
-        # If no data in the selected stress window, fall back to full history
         if self.stress_data.empty:
-            self.stress_data = df.copy()
-            self.used_fallback_full_history = True
+            raise ValueError(
+                "No historical data falls inside the selected stress period "
+                f"{self.stress_period_start} to {self.stress_period_end}."
+            )
     
     def compute_stressed_var(self) -> StressResult:
         """

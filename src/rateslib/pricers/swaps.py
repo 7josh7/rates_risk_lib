@@ -183,8 +183,8 @@ class SwapPricer:
         fixed_cfs = []
         for i, pmt_date in enumerate(fixed_schedule.payment_dates):
             yf = fixed_schedule.year_fractions[i]
-            t = year_fraction(effective, pmt_date, self.fixed_conventions.day_count)
-            df = self.discount_curve.discount_factor(t)
+            t = year_fraction(self.discount_curve.anchor_date, pmt_date, self.discount_curve.day_count)
+            df = self.discount_curve.discount_factor(pmt_date)
             
             amount = notional * fixed_rate * yf
             
@@ -201,14 +201,20 @@ class SwapPricer:
         float_cfs = []
         for i, pmt_date in enumerate(float_schedule.payment_dates):
             yf = float_schedule.year_fractions[i]
-            t = year_fraction(effective, pmt_date, self.float_conventions.day_count)
-            df = self.discount_curve.discount_factor(t)
+            t = year_fraction(self.discount_curve.anchor_date, pmt_date, self.discount_curve.day_count)
+            df = self.discount_curve.discount_factor(pmt_date)
             
             # Get forward rate for this period
-            t_start = year_fraction(effective, float_schedule.accrual_starts[i], 
-                                   self.float_conventions.day_count)
-            t_end = year_fraction(effective, float_schedule.accrual_ends[i],
-                                 self.float_conventions.day_count)
+            t_start = year_fraction(
+                self.projection_curve.anchor_date,
+                float_schedule.accrual_starts[i],
+                self.projection_curve.day_count,
+            )
+            t_end = year_fraction(
+                self.projection_curve.anchor_date,
+                float_schedule.accrual_ends[i],
+                self.projection_curve.day_count,
+            )
             
             if t_start >= 0:
                 fwd_rate = self.projection_curve.forward_rate(t_start, t_end)
@@ -281,28 +287,40 @@ class SwapPricer:
         Returns:
             Par swap rate (decimal)
         """
-        # Generate fixed leg schedule for annuity calculation
-        fixed_schedule, _ = self._generate_schedules(effective, maturity)
+        # Generate schedules for annuity and projected floating leg.
+        fixed_schedule, float_schedule = self._generate_schedules(effective, maturity)
         
         # Calculate annuity
         annuity = 0.0
-        final_t = 0.0
-        
         for i, pmt_date in enumerate(fixed_schedule.payment_dates):
             yf = fixed_schedule.year_fractions[i]
-            t = year_fraction(effective, pmt_date, self.fixed_conventions.day_count)
-            df = self.discount_curve.discount_factor(t)
+            df = self.discount_curve.discount_factor(pmt_date)
             annuity += yf * df
-            final_t = t
-        
-        # Par rate for single-curve
-        final_df = self.discount_curve.discount_factor(final_t)
         
         if annuity <= 0:
             return 0.0
-        
-        par_rate = (1.0 - final_df) / annuity
-        return par_rate
+
+        pv_float_per_notional = 0.0
+        for i, pmt_date in enumerate(float_schedule.payment_dates):
+            yf = float_schedule.year_fractions[i]
+            t_start = year_fraction(
+                self.projection_curve.anchor_date,
+                float_schedule.accrual_starts[i],
+                self.projection_curve.day_count,
+            )
+            t_end = year_fraction(
+                self.projection_curve.anchor_date,
+                float_schedule.accrual_ends[i],
+                self.projection_curve.day_count,
+            )
+            if t_start >= 0:
+                fwd_rate = self.projection_curve.forward_rate(t_start, t_end)
+            else:
+                fwd_rate = self.projection_curve.zero_rate(t_end)
+            df = self.discount_curve.discount_factor(pmt_date)
+            pv_float_per_notional += fwd_rate * yf * df
+
+        return pv_float_per_notional / annuity
     
     def dv01(
         self,
@@ -333,8 +351,7 @@ class SwapPricer:
         annuity = 0.0
         for i, pmt_date in enumerate(fixed_schedule.payment_dates):
             yf = fixed_schedule.year_fractions[i]
-            t = year_fraction(effective, pmt_date, self.fixed_conventions.day_count)
-            df = self.discount_curve.discount_factor(t)
+            df = self.discount_curve.discount_factor(pmt_date)
             annuity += yf * df
         
         # DV01 = Notional * Annuity / 10000

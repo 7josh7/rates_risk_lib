@@ -151,6 +151,27 @@ class TestCurve:
         bump_zr = bump_nodes[node_idx][2]
         assert abs((bump_zr - orig_zr) * 10000 - 10) < 1
 
+    def test_curve_log_linear_interpolation_method_uses_discount_factors(self):
+        """Curve(log_linear) should interpolate discount factors, not zero rates."""
+        anchor_date = date(2024, 1, 15)
+        curve = Curve(anchor_date, interpolation_method="log_linear")
+        curve.add_node(1.0, 0.95)
+        curve.add_node(2.0, 0.90)
+        curve.build()
+
+        assert curve.discount_factor(1.0) == pytest.approx(0.95)
+        assert curve.discount_factor(1.5) == pytest.approx(
+            np.exp((np.log(0.95) + np.log(0.90)) / 2)
+        )
+
+    def test_curve_allows_negative_rate_discount_factors_above_one(self):
+        """Negative-rate curves can have discount factors greater than one."""
+        anchor_date = date(2024, 1, 15)
+        curve = create_flat_curve(anchor_date, rate=-0.01, max_tenor_years=5.0)
+
+        assert curve.discount_factor(anchor_date + timedelta(days=365)) > 1.0
+        assert curve.zero_rate(anchor_date + timedelta(days=365)) < 0.0
+
 
 class TestOISBootstrap:
     """Tests for OIS bootstrapping."""

@@ -154,3 +154,22 @@ class TestRiskCalculator:
         )
         
         assert risk.dv01 != 0
+
+    def test_compute_futures_risk_matches_pricer_sign_convention(self, sample_curve):
+        """Long futures DV01 is positive and short futures DV01 is negative."""
+        calculator = RiskCalculator(sample_curve)
+
+        long_risk = calculator.compute_futures_risk(
+            instrument_id="SFR",
+            expiry=date(2024, 6, 19),
+            num_contracts=2,
+        )
+        short_risk = calculator.compute_futures_risk(
+            instrument_id="SFR",
+            expiry=date(2024, 6, 19),
+            num_contracts=-2,
+        )
+
+        assert long_risk.dv01 > 0
+        assert short_risk.dv01 < 0
+        assert long_risk.dv01 == pytest.approx(-short_risk.dv01)

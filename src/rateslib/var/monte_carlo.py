@@ -52,6 +52,7 @@ class MonteCarloResult:
     mean_pnl: float
     std_pnl: float
     pnl_distribution: np.ndarray = field(repr=False)
+    skipped_paths: int = 0
     
     def to_dict(self) -> Dict:
         """Convert to dictionary."""
@@ -62,7 +63,8 @@ class MonteCarloResult:
             "es_99": self.es_99,
             "num_paths": self.num_paths,
             "mean_pnl": self.mean_pnl,
-            "std_pnl": self.std_pnl
+            "std_pnl": self.std_pnl,
+            "skipped_paths": self.skipped_paths,
         }
 
 
@@ -116,11 +118,17 @@ class MonteCarloVaR:
         
         # Filter tenors
         self.available_tenors = [t for t in self.tenors if t in pivot.columns]
+        if not self.available_tenors:
+            raise ValueError("No requested risk-factor tenors are present in historical_data.")
         pivot = pivot[self.available_tenors].dropna()
+        if pivot.shape[0] < 2:
+            raise ValueError("Need at least two complete historical observations to calibrate Monte Carlo VaR.")
         
         # Compute daily rate changes in basis points
         changes = pivot.diff() * 10000
         changes = changes.dropna()
+        if changes.empty:
+            raise ValueError("No historical rate changes available after differencing.")
         
         # Estimate mean and covariance
         self.mean_changes = changes.mean().values  # Should be ~0
@@ -160,11 +168,8 @@ class MonteCarloVaR:
         Returns:
             Array of shape (num_paths, num_factors) with rate changes in bp
         """
-        if seed is not None:
-            np.random.seed(seed)
-        
-        # Generate standard normal samples
-        z = np.random.standard_normal((num_paths, self.num_factors))
+        rng = np.random.default_rng(seed)
+        z = rng.standard_normal((num_paths, self.num_factors))
         
         # Transform using Cholesky decomposition
         # X = L @ Z gives correlated samples
@@ -209,6 +214,7 @@ class MonteCarloVaR:
         
         # Price under each scenario
         pnl_distribution = []
+        skipped_paths = 0
         
         for i in range(num_paths):
             try:
@@ -216,11 +222,14 @@ class MonteCarloVaR:
                 shocked_pv = self.pricer_func(shocked_curve)
                 pnl = shocked_pv - base_pv
                 pnl_distribution.append(pnl)
-            except:
+            except Exception:
                 # Skip problematic scenarios
+                skipped_paths += 1
                 continue
         
         pnl_array = np.array(pnl_distribution)
+        if len(pnl_array) == 0:
+            raise ValueError("No Monte Carlo paths could be priced; check pricer_func and curve shock inputs.")
         
         # Compute statistics
         var_95 = -np.percentile(pnl_array, 5)
@@ -241,7 +250,8 @@ class MonteCarloVaR:
             num_paths=len(pnl_array),
             mean_pnl=np.mean(pnl_array),
             std_pnl=np.std(pnl_array),
-            pnl_distribution=pnl_array
+            pnl_distribution=pnl_array,
+            skipped_paths=skipped_paths,
         )
     
     def run_delta_normal_var(self) -> Tuple[float, float]:

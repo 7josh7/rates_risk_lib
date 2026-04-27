@@ -54,12 +54,87 @@ from rateslib import (
 )
 
 
+DEMO_KEY_RATE_TENORS = ["3M", "6M", "1Y", "2Y", "3Y", "5Y", "7Y", "10Y", "20Y", "30Y"]
+
+
 def normalize_vol_type(value: object, default: str = "NORMAL") -> str:
     """Return a valid option vol type, defaulting missing/invalid inputs."""
     vol_type = str(value if value is not None else default).upper().strip()
     if vol_type in {"NORMAL", "LOGNORMAL"}:
         return vol_type
     return default
+
+
+def _empty_key_rate_dv01() -> dict:
+    return {tenor: 0.0 for tenor in DEMO_KEY_RATE_TENORS}
+
+
+def _bucket_dv01_to_key_rates(dv01: float, target_years: float) -> dict:
+    """Allocate one DV01 amount to neighboring demo key-rate tenors."""
+    tenor_years = [DateUtils.tenor_to_years(t) for t in DEMO_KEY_RATE_TENORS]
+    bucketed = _empty_key_rate_dv01()
+
+    if target_years <= tenor_years[0]:
+        bucketed[DEMO_KEY_RATE_TENORS[0]] = dv01
+        return bucketed
+    if target_years >= tenor_years[-1]:
+        bucketed[DEMO_KEY_RATE_TENORS[-1]] = dv01
+        return bucketed
+
+    for i in range(len(tenor_years) - 1):
+        left, right = tenor_years[i], tenor_years[i + 1]
+        if left <= target_years <= right:
+            right_weight = (target_years - left) / (right - left)
+            left_weight = 1.0 - right_weight
+            bucketed[DEMO_KEY_RATE_TENORS[i]] = dv01 * left_weight
+            bucketed[DEMO_KEY_RATE_TENORS[i + 1]] = dv01 * right_weight
+            break
+
+    return bucketed
+
+
+def _compute_bond_key_rate_dv01(
+    curve: Curve,
+    valuation_date: date,
+    maturity: date,
+    coupon_rate: float,
+    notional: float,
+    sign: float,
+) -> dict:
+    def pricer_func(bumped_curve: Curve) -> float:
+        pricer = BondPricer(bumped_curve)
+        dirty_price, _, _ = pricer.price(
+            settlement=valuation_date,
+            maturity=maturity,
+            coupon_rate=coupon_rate,
+            frequency=2,
+        )
+        return sign * notional / 100.0 * dirty_price
+
+    result = KeyRateEngine(curve, tenors=DEMO_KEY_RATE_TENORS).compute_key_rate_dv01(pricer_func)
+    return result.dv01s
+
+
+def _compute_swap_key_rate_dv01(
+    curve: Curve,
+    effective: date,
+    maturity: date,
+    notional: float,
+    fixed_rate: float,
+    pay_receive: str,
+) -> dict:
+    def pricer_func(bumped_curve: Curve) -> float:
+        pricer = SwapPricer(bumped_curve, bumped_curve)
+        return pricer.present_value(
+            effective=effective,
+            maturity=maturity,
+            notional=notional,
+            fixed_rate=fixed_rate,
+            pay_receive=pay_receive,
+        )
+
+    result = KeyRateEngine(curve, tenors=DEMO_KEY_RATE_TENORS).compute_key_rate_dv01(pricer_func)
+    return result.dv01s
 
 
 def load_ois_quotes(data_dir: Path) -> pd.DataFrame:
@@ -203,6 +278,14 @@ def price_portfolio(
                 frequency=2,
                 notional=abs(notional)
             ) * sign
+            kr_dv01 = _compute_bond_key_rate_dv01(
+                treasury_curve,
+                valuation_date,
+                maturity,
+                coupon,
+                abs(notional),
+                sign,
+            )
             
             results.append({
                 'position_id': pos_id,
@@ -211,6 +294,7 @@ def price_portfolio(
                 'notional': notional,
                 'pv': pv,
                 'dv01': dv01,
+                'key_rate_dv01': kr_dv01,
                 'clean_price': clean_price,
                 'dirty_price': dirty_price,
             })
@@ -243,6 +327,14 @@ def price_portfolio(
                 fixed_rate=fixed_rate,
                 pay_receive=pay_receive
             )
+            kr_dv01 = _compute_swap_key_rate_dv01(
+                ois_curve,
+                start_date,
+                maturity,
+                abs(notional),
+                fixed_rate,
+                pay_receive,
+            )
             
             results.append({
                 'position_id': pos_id,
@@ -251,6 +343,7 @@ def price_portfolio(
                 'notional': notional,
                 'pv': pv,
                 'dv01': dv01,
+                'key_rate_dv01': kr_dv01,
             })
             
             print(f"  {pos_id}: {pos['instrument_id']:>8s} | PV: ${pv:>14,.2f} | DV01: ${dv01:>10,.2f}")
@@ -269,10 +362,25 @@ def price_portfolio(
             # Get number of contracts
             num_contracts = abs(int(notional))
             
-            # Use theoretical_price which takes a contract (not a rate)
+            # Use theoretical price and mark-to-market against entry/trade price.
             price = futures_pricer.theoretical_price(contract)
             dv01 = futures_pricer.dv01(contract, num_contracts) * sign
-            pv = num_contracts * contract.contract_size * (price / 100) * sign
+            entry_price = pos.get("trade_price", pos.get("entry_price", None))
+            try:
+                entry_price = float(entry_price)
+                if pd.isna(entry_price):
+                    entry_price = None
+            except Exception:
+                entry_price = None
+            if entry_price is None:
+                pv = 0.0
+            else:
+                _, pv, _ = futures_pricer.position_pv(contract, int(num_contracts * sign), entry_price)
+            futures_years = max(
+                0.0,
+                (expiry - valuation_date).days / 365.0 + DateUtils.tenor_to_years(contract.underlying_tenor),
+            )
+            kr_dv01 = _bucket_dv01_to_key_rates(dv01, futures_years)
             
             results.append({
                 'position_id': pos_id,
@@ -281,6 +389,7 @@ def price_portfolio(
                 'notional': num_contracts,
                 'pv': pv,
                 'dv01': dv01,
+                'key_rate_dv01': kr_dv01,
                 'price': price,
             })
             
@@ -350,6 +459,7 @@ def price_portfolio(
                 'notional': notional,
                 'pv': pv,
                 'dv01': 0.0,
+                'key_rate_dv01': _empty_key_rate_dv01(),
                 'forward': forward,
                 'strike': strike,
                 'implied_vol': implied_vol,
@@ -380,16 +490,13 @@ def calculate_risk_metrics(
     
     # Key rate DV01
     print("\nKey Rate DV01:")
-    key_rate_engine = KeyRateEngine(ois_curve)
+    kr_dv01 = _empty_key_rate_dv01()
+    for position in priced_positions:
+        for tenor, value in position.get('key_rate_dv01', {}).items():
+            if tenor in kr_dv01:
+                kr_dv01[tenor] += value
     
-    # Simple approximation using portfolio DV01 weighted by curve sensitivity
-    kr_tenors = ['2Y', '5Y', '10Y', '30Y']
-    kr_dv01 = {}
-    
-    for tenor in kr_tenors:
-        # Approximate key rate DV01 based on instrument distribution
-        tenor_weight = 0.25  # Simplified equal weighting
-        kr_dv01[tenor] = total_dv01 * tenor_weight
+    for tenor in DEMO_KEY_RATE_TENORS:
         print(f"  {tenor:>4s}: ${kr_dv01[tenor]:>12,.2f}")
     
     # Convexity (simplified)
@@ -560,7 +667,7 @@ def generate_report(
     )
     
     # Position detail section
-    position_df = pd.DataFrame(priced_positions)
+    position_df = pd.DataFrame(priced_positions).drop(columns=["key_rate_dv01"], errors="ignore")
     report.add_section(
         title="Position Details",
         data=position_df,

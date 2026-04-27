@@ -289,9 +289,10 @@ class RiskCalculator:
         # Futures have zero PV by design (margin)
         pv = 0.0
         
-        # DV01 for futures
+        # DV01 for futures follows FuturesPricer: positive for long positions
+        # that lose when rates rise, negative for shorts.
         tenor_years = DateUtils.tenor_to_years(underlying_tenor)
-        dv01 = -num_contracts * contract_size * tenor_years / 10000.0
+        dv01 = num_contracts * contract_size * tenor_years / 10000.0
         
         # Duration not meaningful for futures, convexity is minimal
         mod_duration = 0.0

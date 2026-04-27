@@ -97,7 +97,7 @@ class Curve:
         """
         if time < 0:
             raise ValueError("Time must be non-negative")
-        if discount_factor <= 0 or discount_factor > 1:
+        if not np.isfinite(discount_factor) or discount_factor <= 0:
             raise ValueError(f"Invalid discount factor: {discount_factor}")
         
         node = CurveNode.from_discount_factor(time, discount_factor)
@@ -133,9 +133,14 @@ class Curve:
         
         times = np.array([n.time for n in self._nodes])
         zero_rates = np.array([n.zero_rate for n in self._nodes])
+        discount_factors = np.array([n.discount_factor for n in self._nodes])
         
         self._interpolator = create_interpolator(self.interpolation_method)
-        self._interpolator.fit(times, zero_rates)
+        method = self.interpolation_method.lower().replace("-", "_").replace(" ", "_")
+        if method in {"log_linear", "loglinear"}:
+            self._interpolator.fit(times, discount_factors)
+        else:
+            self._interpolator.fit(times, zero_rates)
         self._is_fitted = True
     
     def _ensure_fitted(self) -> None:
@@ -163,8 +168,11 @@ class Curve:
             return 1.0
         
         self._ensure_fitted()
+        method = self.interpolation_method.lower().replace("-", "_").replace(" ", "_")
+        if method in {"log_linear", "loglinear"}:
+            return float(np.exp(self._interpolator.interpolate(t)))
         zr = self._interpolator.interpolate(t)
-        return np.exp(-zr * t)
+        return float(np.exp(-zr * t))
     
     def zero_rate(
         self, 
@@ -191,7 +199,12 @@ class Curve:
             return 0.0
         
         self._ensure_fitted()
-        zr_cont = self._interpolator.interpolate(t)
+        method = self.interpolation_method.lower().replace("-", "_").replace(" ", "_")
+        if method in {"log_linear", "loglinear"}:
+            df = self.discount_factor(t)
+            zr_cont = -np.log(df) / t
+        else:
+            zr_cont = self._interpolator.interpolate(t)
         
         # Convert to requested compounding
         if compounding == CompoundingConvention.CONTINUOUS:
@@ -266,6 +279,9 @@ class Curve:
             return self.zero_rate(0.001)
         
         self._ensure_fitted()
+        method = self.interpolation_method.lower().replace("-", "_").replace(" ", "_")
+        if method in {"log_linear", "loglinear"}:
+            return -self._interpolator.derivative(t)
         zr = self._interpolator.interpolate(t)
         dz_dt = self._interpolator.derivative(t)
         

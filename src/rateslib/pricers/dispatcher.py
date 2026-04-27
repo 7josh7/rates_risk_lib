@@ -242,6 +242,7 @@ def price_trade(trade: TradeLike, market_state: MarketState) -> PricerOutput:
             expiry=trade_data["expiry"],
             contract_size=float(trade_data.get("contract_size", 1_000_000)),
             tick_size=float(trade_data.get("tick_size", 0.0025)),
+            tick_value=float(trade_data.get("tick_value", 6.25)),
             underlying_tenor=str(trade_data.get("underlying_tenor", "3M")),
         )
 
@@ -255,12 +256,13 @@ def price_trade(trade: TradeLike, market_state: MarketState) -> PricerOutput:
         tick_value = float(trade_data.get("tick_value", 6.25))
 
         if trade_price is not None:
-            price_change = theoretical_price - float(trade_price)
-            pv = (price_change / tick_size) * tick_value * num_contracts
+            _, pv, _ = pricer.position_pv(contract, num_contracts, float(trade_price))
+            warnings = []
         else:
-            tenor_years = DateUtils.tenor_to_years(contract.underlying_tenor)
-            sensitivity_per_contract = contract.contract_size * tenor_years / 100.0
-            pv = (theoretical_price - 100.0) * sensitivity_per_contract * num_contracts
+            pv = 0.0
+            warnings = [
+                "Futures trade has no trade_price; PV is reported as zero mark-to-market."
+            ]
 
         return _build_output(
             normalized_trade,
@@ -273,6 +275,7 @@ def price_trade(trade: TradeLike, market_state: MarketState) -> PricerOutput:
                 "num_contracts": num_contracts,
                 "trade_price": trade_price,
             },
+            warnings=warnings,
             audit_extra=market_audit,
         )
 

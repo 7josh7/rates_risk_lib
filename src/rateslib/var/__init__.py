@@ -38,6 +38,14 @@ from .scenarios import (
     run_single_scenario,
     scenarios_to_dataframe,
 )
+from .backtesting import (
+    VaRBacktestResult,
+    backtest_var,
+    kupiec_pof_test,
+    christoffersen_independence_test,
+    traffic_light,
+    rolling_historical_var_backtest,
+)
 
 __all__ = [
     "HistoricalSimulation",
@@ -62,4 +70,10 @@ __all__ = [
     "run_scenario_set",
     "run_single_scenario",
     "scenarios_to_dataframe",
+    "VaRBacktestResult",
+    "backtest_var",
+    "kupiec_pof_test",
+    "christoffersen_independence_test",
+    "traffic_light",
+    "rolling_historical_var_backtest",
 ]

@@ -93,6 +93,21 @@ class TestBondPricer:
         
         # Should be around exp(-0.05 * 1) * 100 ≈ 95.12
         assert 94 < clean < 96
+
+    def test_bond_discounting_uses_curve_anchor_not_settlement_date(self, sample_curve):
+        """PV discounting should stay anchored to the valuation curve date."""
+        pricer = BondPricer(sample_curve)
+        maturity = date(2026, 1, 15)
+
+        dirty, _, _ = pricer.price(
+            settlement=date(2025, 1, 15),
+            maturity=maturity,
+            coupon_rate=0.0,
+            frequency=2,
+            face_value=100.0,
+        )
+
+        assert dirty == pytest.approx(100.0 * sample_curve.discount_factor(maturity))
     
     def test_dv01_positive_for_long(self, sample_curve):
         """Test DV01 is positive for long bond position."""
@@ -204,6 +219,23 @@ class TestSwapPricer:
         
         # PV should be close to zero
         assert abs(pv) < 10_000  # Within $10k for $10M notional
+
+    def test_forward_starting_swap_par_rate_uses_curve_anchor(self, sample_curve):
+        """Forward-starting swaps should price near zero at their forward par rate."""
+        pricer = SwapPricer(sample_curve)
+        effective = date(2025, 1, 15)
+        maturity = date(2030, 1, 15)
+
+        par_rate = pricer.par_rate(effective, maturity)
+        pv = pricer.present_value(
+            effective=effective,
+            maturity=maturity,
+            notional=10_000_000,
+            fixed_rate=par_rate,
+            pay_receive="PAY",
+        )
+
+        assert abs(pv) < 10_000
     
     def test_pay_fixed_vs_receive_fixed(self, sample_curve):
         """Test pay fixed and receive fixed have opposite signs."""
