@@ -16,6 +16,7 @@ from .builders import (
     build_caplet_trade,
     build_futures_trade,
     build_trade_from_position,
+    build_typed_trade_from_position,
     # Portfolio pricing with failure tracking
     price_portfolio_with_diagnostics,
     PortfolioPricingResult,
@@ -36,6 +37,7 @@ __all__ = [
     "build_caplet_trade",
     "build_futures_trade",
     "build_trade_from_position",
+    "build_typed_trade_from_position",
     "price_portfolio_with_diagnostics",
     "PortfolioPricingResult",
     "TradeFailure",

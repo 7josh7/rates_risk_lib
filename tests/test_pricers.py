@@ -6,9 +6,19 @@ from datetime import date, timedelta
 import numpy as np
 import pytest
 
+from rateslib.calendars import UnitedStatesHolidayCalendar
+from rateslib.conventions import BusinessDayConvention, Conventions, DayCount, year_fraction
 from rateslib.curves import Curve, create_flat_curve
 from rateslib.market_state import CurveState, MarketState
-from rateslib.pricers import BondPricer, SwapPricer, FuturesPricer, FuturesContract, risk_trade
+from rateslib.pricers import (
+    BondPricer,
+    SwapPricer,
+    FuturesPricer,
+    FuturesContract,
+    compute_accrued_interest,
+    futures_dv01,
+    risk_trade,
+)
 from rateslib.vol.sabr_surface import SabrSurfaceState, SabrBucketParams
 
 
@@ -121,6 +131,54 @@ class TestBondPricer:
         
         assert dv01_10y > dv01_5y
 
+    def test_seasoned_bond_uses_coupon_cycle_for_cashflows_and_accrual(self, sample_curve):
+        conventions = Conventions(
+            day_count=DayCount.ACT_ACT,
+            business_day=BusinessDayConvention.UNADJUSTED,
+            payment_frequency=2,
+            end_of_month=True,
+        )
+        pricer = BondPricer(sample_curve, conventions)
+
+        cashflows = pricer.generate_cashflows(
+            settlement=date(2024, 3, 15),
+            maturity=date(2025, 1, 31),
+            coupon_rate=0.06,
+            face_value=100.0,
+            frequency=2,
+            accrual_start=date(2024, 1, 31),
+        )
+        dirty, clean, accrued = pricer.price(
+            settlement=date(2024, 3, 15),
+            maturity=date(2025, 1, 31),
+            coupon_rate=0.06,
+            face_value=100.0,
+            frequency=2,
+            accrual_start=date(2024, 1, 31),
+        )
+
+        expected_coupon = 100.0 * 0.06 * year_fraction(
+            date(2024, 1, 31),
+            date(2024, 7, 31),
+            DayCount.ACT_ACT,
+        )
+        expected_accrued = compute_accrued_interest(
+            settlement=date(2024, 3, 15),
+            maturity=date(2025, 1, 31),
+            coupon_rate=0.06,
+            face_value=100.0,
+            frequency=2,
+            day_count=DayCount.ACT_ACT,
+            business_day_convention=BusinessDayConvention.UNADJUSTED,
+            end_of_month=True,
+            accrual_start=date(2024, 1, 31),
+        )
+
+        assert cashflows.cashflows[0].amount == pytest.approx(expected_coupon)
+        assert accrued == pytest.approx(expected_accrued)
+        assert accrued > 0.0
+        assert dirty > clean
+
 
 class TestSwapPricer:
     """Tests for swap pricing."""
@@ -185,6 +243,39 @@ class TestSwapPricer:
         # DV01 should be non-zero
         assert dv01 != 0
 
+    def test_swap_schedule_respects_calendar_and_end_of_month_conventions(self, sample_curve):
+        holiday_calendar = UnitedStatesHolidayCalendar()
+        fixed_conventions = Conventions(
+            day_count=DayCount.ACT_360,
+            business_day=BusinessDayConvention.MODIFIED_FOLLOWING,
+            payment_frequency=2,
+            holiday_calendar=holiday_calendar,
+            end_of_month=True,
+        )
+        float_conventions = Conventions(
+            day_count=DayCount.ACT_360,
+            business_day=BusinessDayConvention.MODIFIED_FOLLOWING,
+            payment_frequency=4,
+            holiday_calendar=holiday_calendar,
+            end_of_month=True,
+        )
+        pricer = SwapPricer(
+            sample_curve,
+            fixed_conventions=fixed_conventions,
+            float_conventions=float_conventions,
+        )
+
+        cashflows = pricer.generate_cashflows(
+            effective=date(2025, 1, 31),
+            maturity=date(2026, 1, 31),
+            notional=10_000_000,
+            fixed_rate=0.05,
+        )
+
+        assert cashflows.fixed_leg[0].date == date(2025, 7, 31)
+        assert cashflows.fixed_leg[-1].date == date(2026, 1, 30)
+        assert cashflows.floating_leg[-1].date == date(2026, 1, 30)
+
 
 class TestFuturesPricer:
     """Tests for futures pricing."""
@@ -222,6 +313,22 @@ class TestFuturesPricer:
         
         # SOFR futures DV01 should be ~$25 per bp per contract
         assert 20 < dv01 < 30
+
+    def test_futures_dv01_helper_matches_pricer_sign_convention(self, sample_curve):
+        """Standalone futures_dv01 helper should match the class-based sign convention."""
+        pricer = FuturesPricer(sample_curve)
+        contract = FuturesContract(
+            contract_code="SFRH4",
+            expiry=date(2024, 3, 20),
+            contract_size=1_000_000,
+            tick_size=0.0025,
+            underlying_tenor="3M"
+        )
+
+        helper = futures_dv01(contract_size=1_000_000, tenor_months=3, num_contracts=1)
+        engine = pricer.dv01(contract, num_contracts=1)
+
+        assert helper == pytest.approx(engine)
 
 
 class TestDispatcherRisk:

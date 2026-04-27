@@ -274,11 +274,11 @@ def futures_dv01(
         num_contracts: Number of contracts
         
     Returns:
-        DV01 in dollars (negative for long position)
+        DV01 in dollars (positive for long position)
     """
     tenor_fraction = tenor_months / 12.0
     dv01_per_contract = contract_size * tenor_fraction / 10000.0
-    return -num_contracts * dv01_per_contract
+    return num_contracts * dv01_per_contract
 
 
 __all__ = [

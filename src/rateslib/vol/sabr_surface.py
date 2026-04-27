@@ -58,6 +58,17 @@ class SabrBucketParams:
         )
 
 
+@dataclass(frozen=True)
+class SabrLookupResult:
+    """Structured result for SABR bucket resolution."""
+
+    requested_bucket: BucketKey
+    used_bucket: Optional[BucketKey]
+    params: Optional[SabrBucketParams]
+    used_fallback: bool = False
+    reason: str = ""
+
+
 @dataclass
 class SabrSurfaceState:
     """
@@ -89,22 +100,67 @@ class SabrSurfaceState:
         
         Special handling for ("ALL", "ALL") bucket which acts as a wildcard.
         """
-        key = make_bucket_key(expiry, tenor)
-        if key in self.params_by_bucket:
-            return self.params_by_bucket[key]
-        
-        # Check for ("ALL", "ALL") wildcard bucket
-        all_key = ("ALL", "ALL")
-        if all_key in self.params_by_bucket:
-            return self.params_by_bucket[all_key]
+        lookup = self.resolve_bucket(expiry, tenor, allow_fallback=allow_fallback)
+        if lookup is None or lookup.params is None:
+            return None
+
+        params = lookup.params
+        if lookup.used_fallback and lookup.used_bucket is not None:
+            params.diagnostics.setdefault("fallback_from", []).append(
+                {"requested": lookup.requested_bucket, "used": lookup.used_bucket}
+            )
+        return params
+
+    def resolve_bucket(
+        self,
+        expiry: str,
+        tenor: str,
+        allow_fallback: bool = True,
+    ) -> Optional[SabrLookupResult]:
+        """
+        Resolve a requested bucket without mutating diagnostics state.
+
+        This is useful for pricing paths that need to distinguish between an
+        exact bucket hit and a fallback.
+        """
+        requested = make_bucket_key(expiry, tenor)
+        if requested in self.params_by_bucket:
+            return SabrLookupResult(
+                requested_bucket=requested,
+                used_bucket=requested,
+                params=self.params_by_bucket[requested],
+                used_fallback=False,
+                reason="exact",
+            )
 
         if not allow_fallback or not self.params_by_bucket:
-            return None
+            return SabrLookupResult(
+                requested_bucket=requested,
+                used_bucket=None,
+                params=None,
+                used_fallback=False,
+                reason="fallback_disabled_or_empty_surface",
+            )
+
+        all_key = ("ALL", "ALL")
+        if all_key in self.params_by_bucket:
+            return SabrLookupResult(
+                requested_bucket=requested,
+                used_bucket=all_key,
+                params=self.params_by_bucket[all_key],
+                used_fallback=True,
+                reason="wildcard",
+            )
 
         if self.missing_bucket_policy != "nearest":
-            return None
+            return SabrLookupResult(
+                requested_bucket=requested,
+                used_bucket=None,
+                params=None,
+                used_fallback=False,
+                reason=f"unsupported_missing_bucket_policy:{self.missing_bucket_policy}",
+            )
 
-        # Nearest neighbour by Euclidean distance in (expiry years, tenor years)
         target_expiry = _bucket_axis_to_years(expiry)
         target_tenor = _bucket_axis_to_years(tenor)
 
@@ -112,7 +168,6 @@ class SabrSurfaceState:
         best_dist = float("inf")
 
         for candidate in self.params_by_bucket.keys():
-            # Skip wildcard buckets like ("ALL", "ALL") in distance calculation
             if "ALL" in candidate:
                 continue
             cand_expiry = _bucket_axis_to_years(candidate[0])
@@ -123,12 +178,21 @@ class SabrSurfaceState:
                 best_key = candidate
 
         if best_key is None:
-            return None
+            return SabrLookupResult(
+                requested_bucket=requested,
+                used_bucket=None,
+                params=None,
+                used_fallback=False,
+                reason="no_candidate_bucket",
+            )
 
-        params = self.params_by_bucket[best_key]
-        # Annotate that a fallback was used
-        params.diagnostics.setdefault("fallback_from", []).append({"requested": key, "used": best_key})
-        return params
+        return SabrLookupResult(
+            requested_bucket=requested,
+            used_bucket=best_key,
+            params=self.params_by_bucket[best_key],
+            used_fallback=True,
+            reason="nearest",
+        )
 
     def diagnostics_table(self) -> Dict[BucketKey, Dict[str, Any]]:
         """
@@ -147,4 +211,10 @@ class SabrSurfaceState:
         return table
 
 
-__all__ = ["SabrBucketParams", "SabrSurfaceState", "make_bucket_key", "BucketKey"]
+__all__ = [
+    "SabrBucketParams",
+    "SabrLookupResult",
+    "SabrSurfaceState",
+    "make_bucket_key",
+    "BucketKey",
+]

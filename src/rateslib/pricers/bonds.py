@@ -14,14 +14,18 @@ Conventions:
 - Yields are continuously compounded unless specified
 """
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from datetime import date
 from typing import List, Optional, Tuple
 
-import numpy as np
-
-from ..conventions import DayCount, year_fraction, Conventions
-from ..dates import DateUtils, generate_bond_schedule, ScheduleInfo
+from ..conventions import (
+    BusinessDayConvention,
+    CalendarInput,
+    Conventions,
+    DayCount,
+    year_fraction,
+)
+from ..dates import generate_bond_schedule
 from ..curves.curve import Curve
 
 
@@ -83,7 +87,8 @@ class BondPricer:
         maturity: date,
         coupon_rate: float,
         face_value: float = 100.0,
-        frequency: int = 2
+        frequency: int = 2,
+        accrual_start: Optional[date] = None,
     ) -> BondCashflows:
         """
         Generate bond cashflows.
@@ -94,20 +99,34 @@ class BondPricer:
             coupon_rate: Annual coupon rate (decimal)
             face_value: Face/par value
             frequency: Coupons per year
-            
+            accrual_start: Optional contractual accrual start date
+
         Returns:
             BondCashflows object
         """
-        schedule = generate_bond_schedule(
-            settlement, maturity, frequency, self.conventions.day_count
+        schedule_start = accrual_start or _infer_previous_coupon_date(
+            settlement,
+            maturity,
+            frequency,
+            end_of_month=self.conventions.end_of_month,
         )
-        
-        coupon_payment = face_value * coupon_rate / frequency
+        schedule = generate_bond_schedule(
+            settle=settlement,
+            maturity=maturity,
+            coupon_freq=frequency,
+            day_count=self.conventions.day_count,
+            holidays=self.conventions.holiday_calendar,
+            business_day_convention=self.conventions.business_day,
+            stub=self.conventions.stub,
+            end_of_month=self.conventions.end_of_month,
+            accrual_start=schedule_start,
+        )
         cashflows = []
         
         for i, (pmt_date, yf) in enumerate(zip(schedule.payment_dates, schedule.year_fractions)):
             # Year fraction from settlement
             t = year_fraction(settlement, pmt_date, self.conventions.day_count)
+            coupon_payment = face_value * coupon_rate * yf
             
             if i == len(schedule.payment_dates) - 1:
                 # Final payment: coupon + principal
@@ -164,7 +183,8 @@ class BondPricer:
         maturity: date,
         coupon_rate: float,
         face_value: float = 100.0,
-        frequency: int = 2
+        frequency: int = 2,
+        accrual_start: Optional[date] = None,
     ) -> Tuple[float, float, float]:
         """
         Price a coupon bond.
@@ -175,20 +195,35 @@ class BondPricer:
             coupon_rate: Annual coupon rate (decimal)
             face_value: Face value
             frequency: Coupons per year
+            accrual_start: Optional contractual accrual start date
             
         Returns:
             Tuple of (dirty_price, clean_price, accrued_interest)
         """
         cashflows = self.generate_cashflows(
-            settlement, maturity, coupon_rate, face_value, frequency
+            settlement,
+            maturity,
+            coupon_rate,
+            face_value,
+            frequency,
+            accrual_start=accrual_start,
         )
         
         dirty_price = self.present_value(cashflows)
         
         # Calculate accrued interest
         accrued = compute_accrued_interest(
-            settlement, maturity, coupon_rate, face_value, 
-            frequency, self.conventions.day_count
+            settlement,
+            maturity,
+            coupon_rate,
+            face_value,
+            frequency,
+            self.conventions.day_count,
+            business_day_convention=self.conventions.business_day,
+            holidays=self.conventions.holiday_calendar,
+            stub=self.conventions.stub,
+            end_of_month=self.conventions.end_of_month,
+            accrual_start=accrual_start,
         )
         
         clean_price = dirty_price - accrued
@@ -224,7 +259,8 @@ class BondPricer:
         coupon_rate: float,
         face_value: float = 100.0,
         frequency: int = 2,
-        is_clean: bool = True
+        is_clean: bool = True,
+        accrual_start: Optional[date] = None,
     ) -> float:
         """
         Compute yield to maturity from price.
@@ -239,6 +275,7 @@ class BondPricer:
             face_value: Face value
             frequency: Coupons per year
             is_clean: Whether price is clean (True) or dirty (False)
+            accrual_start: Optional contractual accrual start date
             
         Returns:
             Yield to maturity (annual, bond-equivalent)
@@ -248,8 +285,17 @@ class BondPricer:
         # If clean price, add accrued
         if is_clean:
             accrued = compute_accrued_interest(
-                settlement, maturity, coupon_rate, face_value,
-                frequency, self.conventions.day_count
+                settlement,
+                maturity,
+                coupon_rate,
+                face_value,
+                frequency,
+                self.conventions.day_count,
+                business_day_convention=self.conventions.business_day,
+                holidays=self.conventions.holiday_calendar,
+                stub=self.conventions.stub,
+                end_of_month=self.conventions.end_of_month,
+                accrual_start=accrual_start,
             )
             target_dirty = price + accrued
         else:
@@ -257,7 +303,12 @@ class BondPricer:
         
         # Generate cashflows for timing
         cashflows = self.generate_cashflows(
-            settlement, maturity, coupon_rate, face_value, frequency
+            settlement,
+            maturity,
+            coupon_rate,
+            face_value,
+            frequency,
+            accrual_start=accrual_start,
         )
         
         def pv_at_yield(y):
@@ -288,7 +339,8 @@ class BondPricer:
         coupon_rate: float,
         face_value: float = 100.0,
         frequency: int = 2,
-        notional: float = 1_000_000
+        notional: float = 1_000_000,
+        accrual_start: Optional[date] = None,
     ) -> float:
         """
         Compute bond DV01 using numerical differentiation.
@@ -302,12 +354,20 @@ class BondPricer:
             face_value: Face value
             frequency: Coupons per year
             notional: Notional amount
+            accrual_start: Optional contractual accrual start date
             
         Returns:
             DV01 in currency units (positive for long position)
         """
         # Get current price
-        dirty_price, _, _ = self.price(settlement, maturity, coupon_rate, face_value, frequency)
+        dirty_price, _, _ = self.price(
+            settlement,
+            maturity,
+            coupon_rate,
+            face_value,
+            frequency,
+            accrual_start=accrual_start,
+        )
         
         # Bump curve up by 1bp and reprice
         from ..risk.bumping import BumpEngine
@@ -316,7 +376,14 @@ class BondPricer:
         
         # Create new pricer with bumped curve
         bumped_pricer = BondPricer(bumped_curve, self.conventions)
-        bumped_dirty, _, _ = bumped_pricer.price(settlement, maturity, coupon_rate, face_value, frequency)
+        bumped_dirty, _, _ = bumped_pricer.price(
+            settlement,
+            maturity,
+            coupon_rate,
+            face_value,
+            frequency,
+            accrual_start=accrual_start,
+        )
         
         # DV01 = -(P_up - P_base) * notional / face_value
         dv01 = -(bumped_dirty - dirty_price) * notional / face_value
@@ -358,7 +425,12 @@ def price_coupon_bond(
     coupon_rate: float,
     face_value: float = 100.0,
     frequency: int = 2,
-    day_count: DayCount = DayCount.ACT_ACT
+    day_count: DayCount = DayCount.ACT_ACT,
+    business_day_convention: BusinessDayConvention = BusinessDayConvention.FOLLOWING,
+    holidays: CalendarInput = None,
+    stub: str = "short_front",
+    end_of_month: bool = False,
+    accrual_start: Optional[date] = None,
 ) -> Tuple[float, float, float]:
     """
     Price a coupon bond.
@@ -371,13 +443,32 @@ def price_coupon_bond(
         face_value: Face value
         frequency: Coupons per year
         day_count: Day count convention
+        business_day_convention: Payment-date rolling rule
+        holidays: Holiday calendar
+        stub: Stub period handling
+        end_of_month: Preserve end-of-month regular schedule dates
+        accrual_start: Optional contractual accrual start date
         
     Returns:
         Tuple of (dirty_price, clean_price, accrued_interest)
     """
-    conventions = Conventions(day_count=day_count, payment_frequency=frequency)
+    conventions = Conventions(
+        day_count=day_count,
+        business_day=business_day_convention,
+        payment_frequency=frequency,
+        holiday_calendar=holidays,
+        end_of_month=end_of_month,
+        stub=stub,
+    )
     pricer = BondPricer(curve, conventions)
-    return pricer.price(settlement, maturity, coupon_rate, face_value, frequency)
+    return pricer.price(
+        settlement,
+        maturity,
+        coupon_rate,
+        face_value,
+        frequency,
+        accrual_start=accrual_start,
+    )
 
 
 def compute_accrued_interest(
@@ -386,7 +477,12 @@ def compute_accrued_interest(
     coupon_rate: float,
     face_value: float = 100.0,
     frequency: int = 2,
-    day_count: DayCount = DayCount.ACT_ACT
+    day_count: DayCount = DayCount.ACT_ACT,
+    business_day_convention: BusinessDayConvention = BusinessDayConvention.FOLLOWING,
+    holidays: CalendarInput = None,
+    stub: str = "short_front",
+    end_of_month: bool = False,
+    accrual_start: Optional[date] = None,
 ) -> float:
     """
     Compute accrued interest.
@@ -398,41 +494,91 @@ def compute_accrued_interest(
         face_value: Face value
         frequency: Coupons per year
         day_count: Day count convention
+        business_day_convention: Payment-date rolling rule
+        holidays: Holiday calendar
+        stub: Stub period handling
+        end_of_month: Preserve end-of-month regular schedule dates
+        accrual_start: Optional contractual accrual start date
         
     Returns:
         Accrued interest
     """
-    # Find previous coupon date
-    months_per_period = 12 // frequency
-    
-    # Work backward from maturity to find the period containing settlement
-    prev_coupon = maturity
-    next_coupon = maturity
-    
-    while prev_coupon > settlement:
-        next_coupon = prev_coupon
-        year = prev_coupon.year
-        month = prev_coupon.month - months_per_period
-        while month <= 0:
-            month += 12
-            year -= 1
-        day = min(maturity.day, _days_in_month(year, month))
-        prev_coupon = date(year, month, day)
-    
-    # Calculate accrued
-    period_fraction = year_fraction(prev_coupon, next_coupon, day_count)
-    accrued_fraction = year_fraction(prev_coupon, settlement, day_count)
-    
-    if period_fraction <= 0:
+    if settlement >= maturity or frequency <= 0:
         return 0.0
-    
-    coupon_payment = face_value * coupon_rate / frequency
-    accrued = coupon_payment * (accrued_fraction / period_fraction) * frequency / (12 / months_per_period)
-    
-    # Simpler approach: fraction of period elapsed
-    accrued = coupon_payment * (accrued_fraction / period_fraction) if period_fraction > 0 else 0
-    
-    return max(0.0, accrued)
+
+    schedule_start = accrual_start or _infer_previous_coupon_date(
+        settlement,
+        maturity,
+        frequency,
+        end_of_month=end_of_month,
+    )
+    schedule = generate_bond_schedule(
+        settle=settlement,
+        maturity=maturity,
+        coupon_freq=frequency,
+        day_count=day_count,
+        holidays=holidays,
+        business_day_convention=business_day_convention,
+        stub=stub,
+        end_of_month=end_of_month,
+        accrual_start=schedule_start,
+    )
+
+    if not schedule.payment_dates:
+        return 0.0
+
+    period_start = schedule.accrual_starts[0]
+    period_end = schedule.accrual_ends[0]
+    period_fraction = year_fraction(period_start, period_end, day_count)
+    accrued_fraction = year_fraction(period_start, settlement, day_count)
+
+    if period_fraction <= 0.0 or accrued_fraction <= 0.0:
+        return 0.0
+
+    coupon_payment = face_value * coupon_rate * period_fraction
+    return coupon_payment * (accrued_fraction / period_fraction)
+
+
+def _infer_previous_coupon_date(
+    settlement: date,
+    maturity: date,
+    frequency: int,
+    end_of_month: bool = False,
+) -> date:
+    """Infer the previous coupon boundary from maturity and coupon frequency."""
+    if frequency <= 0 or 12 % frequency != 0:
+        raise ValueError("Frequency must be a positive divisor of 12")
+    if settlement >= maturity:
+        return maturity
+
+    months_per_period = 12 // frequency
+    previous_boundary = maturity
+
+    while True:
+        candidate = _shift_months(
+            previous_boundary,
+            -months_per_period,
+            end_of_month=end_of_month,
+        )
+        if candidate <= settlement:
+            return candidate
+        previous_boundary = candidate
+
+
+def _shift_months(start: date, months: int, end_of_month: bool = False) -> date:
+    total_months = (start.year * 12 + (start.month - 1)) + months
+    year = total_months // 12
+    month = total_months % 12 + 1
+    preserve_eom = end_of_month and _is_end_of_month(start)
+    if preserve_eom:
+        day = _days_in_month(year, month)
+    else:
+        day = min(start.day, _days_in_month(year, month))
+    return date(year, month, day)
+
+
+def _is_end_of_month(d: date) -> bool:
+    return d.day == _days_in_month(d.year, d.month)
 
 
 def _days_in_month(year: int, month: int) -> int:

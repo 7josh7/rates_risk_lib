@@ -7,14 +7,48 @@ A modular library for:
 - Computing desk-relevant risk metrics (DV01, key-rate, VaR/ES)
 - P&L attribution and risk reporting
 
-Scope: USD rates only; linear products only (bonds, vanilla IRS, futures).
+Scope: USD rates only, with support for both linear rates products and
+rates options.
 """
 
 __version__ = "0.1.0"
 
 # Core modules
-from .conventions import DayCount, BusinessDayConvention, Conventions, year_fraction
+from .calendars import (
+    BusinessCalendar,
+    WeekendOnlyCalendar,
+    ExplicitHolidayCalendar,
+    UnitedStatesHolidayCalendar,
+)
+from .conventions import (
+    DayCount,
+    BusinessDayConvention,
+    Conventions,
+    advance_business_days,
+    year_fraction,
+)
 from .dates import DateUtils, ScheduleInfo
+from .domain import (
+    PricingPolicy,
+    TradeNormalizationError,
+    TradeBase,
+    BondTrade,
+    SwapTrade,
+    FuturesTrade,
+    SwaptionTrade,
+    CapletTrade,
+    normalize_trade,
+)
+from .market_conventions import (
+    ConventionSpec,
+    MarketConventionTemplate,
+    ResolvedMarketConvention,
+    MarketConventionError,
+    STANDARD_MARKET_TEMPLATES,
+    available_market_conventions,
+    get_market_convention,
+    resolve_market_convention_for_trade,
+)
 
 # Curves
 from .curves import (
@@ -74,6 +108,7 @@ from .vol import (
     normalize_vol_quotes,
     SabrSurfaceState,
     SabrBucketParams,
+    SabrLookupResult,
     make_bucket_key,
     calibrate_sabr_bucket,
     build_sabr_surface,
@@ -105,6 +140,7 @@ from .portfolio import (
     build_swap_trade,
     build_swaption_trade,
     build_caplet_trade,
+    build_typed_trade_from_position,
     build_trade_from_position,
     price_portfolio_with_diagnostics,
     PortfolioPricingResult,
@@ -123,10 +159,33 @@ __all__ = [
     "DayCount",
     "BusinessDayConvention",
     "Conventions",
+    "BusinessCalendar",
+    "WeekendOnlyCalendar",
+    "ExplicitHolidayCalendar",
+    "UnitedStatesHolidayCalendar",
+    "advance_business_days",
     "year_fraction",
     # Dates
     "DateUtils",
     "ScheduleInfo",
+    # Domain
+    "PricingPolicy",
+    "TradeNormalizationError",
+    "TradeBase",
+    "BondTrade",
+    "SwapTrade",
+    "FuturesTrade",
+    "SwaptionTrade",
+    "CapletTrade",
+    "normalize_trade",
+    "ConventionSpec",
+    "MarketConventionTemplate",
+    "ResolvedMarketConvention",
+    "MarketConventionError",
+    "STANDARD_MARKET_TEMPLATES",
+    "available_market_conventions",
+    "get_market_convention",
+    "resolve_market_convention_for_trade",
     # Curves
     "Curve",
     "OISBootstrapper",
@@ -178,6 +237,7 @@ __all__ = [
     "normalize_vol_quotes",
     "SabrSurfaceState",
     "SabrBucketParams",
+    "SabrLookupResult",
     "make_bucket_key",
     "calibrate_sabr_bucket",
     "build_sabr_surface",
@@ -205,6 +265,7 @@ __all__ = [
     "build_swap_trade",
     "build_swaption_trade",
     "build_caplet_trade",
+    "build_typed_trade_from_position",
     "build_trade_from_position",
     "price_portfolio_with_diagnostics",
     "PortfolioPricingResult",

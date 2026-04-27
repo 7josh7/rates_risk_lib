@@ -16,14 +16,12 @@ Pricing formula (single-curve):
     PV_float ≈ 1 - DF(T_n)  (par at inception)
 """
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from datetime import date
 from typing import List, Optional, Tuple
 
-import numpy as np
-
 from ..conventions import DayCount, year_fraction, Conventions
-from ..dates import DateUtils, generate_swap_schedule, ScheduleInfo
+from ..dates import generate_swap_schedule
 from ..curves.curve import Curve
 
 
@@ -102,6 +100,25 @@ class SwapPricer:
             payment_frequency=4  # Quarterly
         )
 
+    def _generate_schedules(self, effective: date, maturity: date):
+        """Generate fixed and floating leg schedules using leg-specific conventions."""
+        return generate_swap_schedule(
+            effective=effective,
+            maturity=maturity,
+            fixed_freq=self.fixed_conventions.payment_frequency,
+            float_freq=self.float_conventions.payment_frequency,
+            fixed_dc=self.fixed_conventions.day_count,
+            float_dc=self.float_conventions.day_count,
+            fixed_holidays=self.fixed_conventions.holiday_calendar,
+            float_holidays=self.float_conventions.holiday_calendar,
+            fixed_business_day=self.fixed_conventions.business_day,
+            float_business_day=self.float_conventions.business_day,
+            fixed_stub=self.fixed_conventions.stub,
+            float_stub=self.float_conventions.stub,
+            fixed_end_of_month=self.fixed_conventions.end_of_month,
+            float_end_of_month=self.float_conventions.end_of_month,
+        )
+
     def forward_swap_rate(self, expiry: float, tenor: float) -> Tuple[float, float]:
         """
         Compute the forward par swap rate and annuity for a swap that starts at
@@ -160,13 +177,7 @@ class SwapPricer:
             SwapCashflows object with both legs
         """
         # Generate schedules
-        fixed_schedule, float_schedule = generate_swap_schedule(
-            effective, maturity,
-            self.fixed_conventions.payment_frequency,
-            self.float_conventions.payment_frequency,
-            self.fixed_conventions.day_count,
-            self.float_conventions.day_count
-        )
+        fixed_schedule, float_schedule = self._generate_schedules(effective, maturity)
         
         # Fixed leg cashflows
         fixed_cfs = []
@@ -271,13 +282,7 @@ class SwapPricer:
             Par swap rate (decimal)
         """
         # Generate fixed leg schedule for annuity calculation
-        fixed_schedule, _ = generate_swap_schedule(
-            effective, maturity,
-            self.fixed_conventions.payment_frequency,
-            self.float_conventions.payment_frequency,
-            self.fixed_conventions.day_count,
-            self.float_conventions.day_count
-        )
+        fixed_schedule, _ = self._generate_schedules(effective, maturity)
         
         # Calculate annuity
         annuity = 0.0
@@ -322,13 +327,7 @@ class SwapPricer:
         Returns:
             DV01 in currency units
         """
-        fixed_schedule, _ = generate_swap_schedule(
-            effective, maturity,
-            self.fixed_conventions.payment_frequency,
-            self.float_conventions.payment_frequency,
-            self.fixed_conventions.day_count,
-            self.float_conventions.day_count
-        )
+        fixed_schedule, _ = self._generate_schedules(effective, maturity)
         
         # Calculate annuity
         annuity = 0.0

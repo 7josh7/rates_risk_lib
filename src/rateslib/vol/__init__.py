@@ -16,7 +16,12 @@ from .sabr import (
 )
 from .calibration import SabrCalibrator, calibrate_sabr_bucket, build_sabr_surface
 from .quotes import VolQuote, load_vol_quotes, normalize_vol_quotes
-from .sabr_surface import SabrSurfaceState, SabrBucketParams, make_bucket_key
+from .sabr_surface import (
+    SabrSurfaceState,
+    SabrBucketParams,
+    SabrLookupResult,
+    make_bucket_key,
+)
 
 __all__ = [
     "SabrParams",
@@ -27,6 +32,7 @@ __all__ = [
     "normalize_vol_quotes",
     "SabrSurfaceState",
     "SabrBucketParams",
+    "SabrLookupResult",
     "make_bucket_key",
     "calibrate_sabr_bucket",
     "build_sabr_surface",

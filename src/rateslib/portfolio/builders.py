@@ -68,6 +68,8 @@ from typing import Any, Dict, List, Optional, Tuple
 import pandas as pd
 
 from ..dates import DateUtils
+from ..domain import TypedTrade, normalize_trade
+from ..market_conventions import resolve_market_convention_for_trade
 
 
 # =============================================================================
@@ -241,6 +243,16 @@ def _parse_strike(strike_raw: Any, forward: float = 0.0) -> float:
     return float(strike_raw)
 
 
+def _copy_market_context(pos: pd.Series) -> Dict[str, Any]:
+    """Preserve market-convention hints so dispatchers can resolve templates."""
+    result: Dict[str, Any] = {}
+    for field_name in ("currency", "market_convention", "convention_template"):
+        value = pos.get(field_name)
+        if not _is_missing_value(value):
+            result[field_name] = str(value).strip() if isinstance(value, str) else value
+    return result
+
+
 # =============================================================================
 # BOND TRADE BUILDER
 # =============================================================================
@@ -285,15 +297,34 @@ def build_bond_trade(
     # Optional fields
     coupon = float(pos.get("coupon", 0.0))
     frequency = int(pos.get("frequency", 2))
+    settlement_date = _parse_date(pos.get("settlement_date"))
+    trade_date = _parse_date(pos.get("trade_date"))
+
+    market_context = {
+        "instrument_type": inst_type,
+        **_copy_market_context(pos),
+    }
+    resolved_market = resolve_market_convention_for_trade(market_context)
+    if settlement_date is None:
+        if trade_date is not None and resolved_market.primary_conventions() is not None:
+            conventions = resolved_market.primary_conventions()
+            settlement_date = DateUtils.spot_date(
+                trade_date,
+                settlement_days=conventions.settlement_days,
+                holidays=conventions.holiday_calendar,
+            )
+        else:
+            settlement_date = valuation_date
     
     return {
         "instrument_type": inst_type,
-        "settlement": valuation_date,
+        "settlement": settlement_date,
         "maturity": maturity_date,
         "coupon": coupon,
         "notional": notional * sign,
         "frequency": frequency,
         "face_value": 100.0,
+        **market_context,
         # Metadata for traceability
         "_position_id": position_id,
         "_direction": direction,
@@ -357,14 +388,33 @@ def build_swap_trade(
     
     # Optional fields
     fixed_rate = float(pos.get("coupon", 0.0))
+    effective_date = _parse_date(pos.get("effective_date"))
+    trade_date = _parse_date(pos.get("trade_date"))
+
+    market_context = {
+        "instrument_type": "SWAP",
+        **_copy_market_context(pos),
+    }
+    resolved_market = resolve_market_convention_for_trade(market_context)
+    if effective_date is None:
+        if trade_date is not None and resolved_market.primary_conventions() is not None:
+            conventions = resolved_market.primary_conventions()
+            effective_date = DateUtils.spot_date(
+                trade_date,
+                settlement_days=conventions.settlement_days,
+                holidays=conventions.holiday_calendar,
+            )
+        else:
+            effective_date = valuation_date
     
     return {
         "instrument_type": "SWAP",
-        "effective": valuation_date,
+        "effective": effective_date,
         "maturity": maturity_date,
         "notional": notional,
         "fixed_rate": fixed_rate,
         "pay_receive": pay_receive,
+        **market_context,
         # Metadata for traceability
         "_position_id": position_id,
         "_direction": direction,
@@ -756,7 +806,8 @@ def build_trade_from_position(
     pos: pd.Series,
     valuation_date: date,
     allow_legacy_options: bool = False,
-) -> Dict[str, Any]:
+    typed: bool = False,
+) -> Any:
     """
     Build a trade dict from a position row, dispatching to appropriate builder.
     
@@ -765,9 +816,10 @@ def build_trade_from_position(
         valuation_date: Valuation date for pricing
         allow_legacy_options: If True, attempt backward-compatible option parsing.
             NOT RECOMMENDED for production. Default False.
-    
+        typed: If True, return a typed trade object instead of a legacy dict.
+
     Returns:
-        Trade dict ready for price_trade()
+        Trade dict ready for price_trade(), or a typed trade when typed=True.
     
     Raises:
         PositionValidationError: Position cannot be converted to trade
@@ -782,36 +834,64 @@ def build_trade_from_position(
     if option_type is not None:
         option_type = str(option_type).upper().strip()
         if option_type == "SWAPTION":
-            return build_swaption_trade(pos, valuation_date)
+            trade = build_swaption_trade(pos, valuation_date)
+            return normalize_trade(trade) if typed else trade
         elif option_type == "CAPLET":
-            return build_caplet_trade(pos, valuation_date)
+            trade = build_caplet_trade(pos, valuation_date)
+            return normalize_trade(trade) if typed else trade
         else:
             raise InvalidOptionError(
                 position_id,
                 f"Unknown option_type '{option_type}'. Expected 'SWAPTION' or 'CAPLET'"
             )
-    
+
     # Dispatch by instrument_type
     if inst_type in {"BOND", "UST"}:
-        return build_bond_trade(pos, valuation_date)
+        trade = build_bond_trade(pos, valuation_date)
+        return normalize_trade(trade) if typed else trade
     
     if inst_type in {"SWAP", "IRS"}:
-        return build_swap_trade(pos, valuation_date)
+        trade = build_swap_trade(pos, valuation_date)
+        return normalize_trade(trade) if typed else trade
     
     if inst_type == "SWAPTION":
-        return build_swaption_trade(pos, valuation_date)
+        trade = build_swaption_trade(pos, valuation_date)
+        return normalize_trade(trade) if typed else trade
     
     if inst_type in {"CAPLET", "CAP", "CAPFLOOR"}:
-        return build_caplet_trade(pos, valuation_date)
+        trade = build_caplet_trade(pos, valuation_date)
+        return normalize_trade(trade) if typed else trade
     
     if inst_type in {"FUT", "FUTURE", "FUTURES"}:
-        return build_futures_trade(pos, valuation_date)
+        trade = build_futures_trade(pos, valuation_date)
+        return normalize_trade(trade) if typed else trade
     
     raise PositionValidationError(
         position_id,
         f"Unknown instrument_type '{inst_type}'. "
         "Supported: BOND, UST, SWAP, IRS, SWAPTION, CAPLET, CAP, CAPFLOOR"
     )
+
+
+def build_typed_trade_from_position(
+    pos: pd.Series,
+    valuation_date: date,
+    allow_legacy_options: bool = False,
+) -> TypedTrade:
+    """
+    Build a typed trade object from a position row.
+
+    This is the preferred entry point for new code that wants an explicit
+    internal trade model while preserving backward compatibility for the
+    dict-based API.
+    """
+    trade = build_trade_from_position(
+        pos,
+        valuation_date,
+        allow_legacy_options=allow_legacy_options,
+        typed=True,
+    )
+    return trade
 
 
 # =============================================================================

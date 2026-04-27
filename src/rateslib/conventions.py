@@ -14,10 +14,15 @@ Business Day Conventions:
 """
 
 from dataclasses import dataclass
-from datetime import date
+from datetime import date, timedelta
 from enum import Enum
-from typing import Optional
+from typing import Iterable, Optional, Union
 import calendar
+
+from .calendars import BusinessCalendar, calendar_from_input
+
+
+CalendarInput = Optional[Union[BusinessCalendar, Iterable[date]]]
 
 
 class DayCount(Enum):
@@ -80,6 +85,9 @@ class Conventions:
     compounding: CompoundingConvention = CompoundingConvention.CONTINUOUS
     payment_frequency: int = 1  # Annual
     settlement_days: int = 2
+    holiday_calendar: CalendarInput = None
+    end_of_month: bool = False
+    stub: str = "short_front"
     
     # Standard USD conventions
     @classmethod
@@ -180,7 +188,7 @@ def year_fraction(start: date, end: date, day_count: DayCount) -> float:
         raise ValueError(f"Unknown day count: {day_count}")
 
 
-def is_business_day(d: date, holidays: Optional[set] = None) -> bool:
+def is_business_day(d: date, holidays: CalendarInput = None) -> bool:
     """
     Check if a date is a business day.
     
@@ -193,21 +201,37 @@ def is_business_day(d: date, holidays: Optional[set] = None) -> bool:
     Returns:
         True if business day, False otherwise
     """
-    # Weekend check (0 = Monday, 5 = Saturday, 6 = Sunday)
-    if d.weekday() >= 5:
-        return False
-    
-    # Holiday check
-    if holidays and d in holidays:
-        return False
-    
-    return True
+    cal = calendar_from_input(holidays)
+    return cal.is_business_day(d)
+
+
+def advance_business_days(
+    start: date,
+    business_days: int,
+    holidays: CalendarInput = None,
+) -> date:
+    """
+    Advance forward or backward by a number of business days.
+    """
+    if business_days == 0:
+        return start
+
+    step = 1 if business_days > 0 else -1
+    remaining = abs(business_days)
+    current = start
+
+    while remaining > 0:
+        current += timedelta(days=step)
+        if is_business_day(current, holidays):
+            remaining -= 1
+
+    return current
 
 
 def adjust_business_day(
     d: date, 
     convention: BusinessDayConvention,
-    holidays: Optional[set] = None
+    holidays: CalendarInput = None
 ) -> date:
     """
     Adjust a date according to business day convention.
@@ -227,27 +251,18 @@ def adjust_business_day(
         return d
     
     if convention == BusinessDayConvention.FOLLOWING:
-        while not is_business_day(d, holidays):
-            d = date(d.year, d.month, d.day + 1) if d.day < 28 else d + __import__('datetime').timedelta(days=1)
-            from datetime import timedelta
-            d_temp = d
-            d = d_temp + timedelta(days=1) if not is_business_day(d, holidays) else d
-            # Corrected loop
         adjusted = d
         while not is_business_day(adjusted, holidays):
-            from datetime import timedelta
             adjusted += timedelta(days=1)
         return adjusted
     
     elif convention == BusinessDayConvention.PRECEDING:
-        from datetime import timedelta
         adjusted = d
         while not is_business_day(adjusted, holidays):
             adjusted -= timedelta(days=1)
         return adjusted
     
     elif convention == BusinessDayConvention.MODIFIED_FOLLOWING:
-        from datetime import timedelta
         # First try following
         adjusted = d
         while not is_business_day(adjusted, holidays):
@@ -269,8 +284,10 @@ __all__ = [
     "DayCount",
     "BusinessDayConvention", 
     "CompoundingConvention",
+    "CalendarInput",
     "Conventions",
     "year_fraction",
     "is_business_day",
+    "advance_business_days",
     "adjust_business_day",
 ]

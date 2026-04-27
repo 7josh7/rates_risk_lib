@@ -24,6 +24,7 @@ from .futures import (
     FuturesPricer,
     FuturesContract,
     price_rate_future,
+    futures_dv01,
 )
 from .dispatcher import price_trade, risk_trade, PricerOutput
 
@@ -40,6 +41,7 @@ __all__ = [
     "FuturesPricer",
     "FuturesContract",
     "price_rate_future",
+    "futures_dv01",
     "price_trade",
     "risk_trade",
     "PricerOutput",

@@ -1,23 +1,27 @@
 """
 Unified trade-level pricing and risk dispatch.
 
-Supports linear instruments (bond, swap, futures) and options (caplet, swaption)
-using MarketState = (CurveState, SabrSurfaceState).
+Supports linear instruments (bond, swap, futures) and options (caplet,
+swaption) using MarketState = (CurveState, SabrSurfaceState).
+
+The dispatcher accepts either legacy trade dictionaries or the typed trade
+objects defined in ``rateslib.domain``.
 """
 
-from dataclasses import dataclass
-from typing import Any, Dict, Optional
-from datetime import date
+from dataclasses import dataclass, field
+from typing import Any, Dict, List, Optional, Tuple
 
-from ..market_state import MarketState
-from .bonds import BondPricer
-from .swaps import SwapPricer
-from .futures import FuturesPricer, FuturesContract
-from ..options.caplet import CapletPricer
-from ..options.swaption import SwaptionPricer
-from ..options.sabr_risk import SabrOptionRisk
-from ..vol.sabr_surface import make_bucket_key
 from ..dates import DateUtils
+from ..domain import CapletTrade, SwaptionTrade, TradeLike, normalize_trade
+from ..market_conventions import resolve_market_convention_for_trade
+from ..market_state import MarketState
+from ..options.caplet import CapletPricer
+from ..options.sabr_risk import SabrOptionRisk
+from ..options.swaption import SwaptionPricer
+from ..vol.sabr_surface import SabrLookupResult, make_bucket_key
+from .bonds import BondPricer
+from .futures import FuturesContract, FuturesPricer
+from .swaps import SwapPricer
 
 
 @dataclass
@@ -27,32 +31,165 @@ class PricerOutput:
     instrument_type: str
     pv: float
     details: Dict[str, Any]
+    warnings: List[str] = field(default_factory=list)
+    audit: Dict[str, Any] = field(default_factory=dict)
+    trade_id: Optional[str] = None
 
     def to_dict(self) -> Dict[str, Any]:
-        return {"instrument_type": self.instrument_type, "pv": self.pv, **self.details}
+        result = {
+            "instrument_type": self.instrument_type,
+            "pv": self.pv,
+            **self.details,
+        }
+        if self.warnings:
+            result["warnings"] = list(self.warnings)
+        if self.audit:
+            result["audit"] = dict(self.audit)
+        if self.trade_id is not None:
+            result["trade_id"] = self.trade_id
+        return result
 
 
-def price_trade(trade: Dict[str, Any], market_state: MarketState) -> PricerOutput:
+def _build_audit(
+    trade,
+    market_state: MarketState,
+    extra: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Any]:
+    if not market_state.pricing_policy.record_audit:
+        return {}
+
+    audit = {
+        "trade_id": trade.trade_id,
+        "position_id": trade.position_id,
+        "market_asof": market_state.asof,
+        "pricing_policy": market_state.pricing_policy.to_dict(),
+    }
+    if extra:
+        audit.update(extra)
+    return audit
+
+
+def _build_output(
+    trade,
+    market_state: MarketState,
+    pv: float,
+    details: Dict[str, Any],
+    warnings: Optional[List[str]] = None,
+    audit_extra: Optional[Dict[str, Any]] = None,
+) -> PricerOutput:
+    return PricerOutput(
+        instrument_type=str(trade.instrument_type).upper(),
+        pv=pv,
+        details=details,
+        warnings=list(warnings or []),
+        audit=_build_audit(trade, market_state, extra=audit_extra),
+        trade_id=trade.trade_id or trade.position_id,
+    )
+
+
+def _merge_audit_extras(*extras: Optional[Dict[str, Any]]) -> Dict[str, Any]:
+    merged: Dict[str, Any] = {}
+    for extra in extras:
+        if extra:
+            merged.update(extra)
+    return merged
+
+
+def _resolve_strike(strike_raw: Any, forward: float) -> float:
+    if strike_raw is None:
+        strike = forward
+    elif isinstance(strike_raw, str) and strike_raw.upper() == "ATM":
+        strike = forward
+    else:
+        try:
+            strike = float(strike_raw)
+        except Exception:
+            strike = forward
+    if strike <= 0:
+        return max(forward, 1e-6)
+    return strike
+
+
+def _lookup_to_audit(lookup: Optional[SabrLookupResult]) -> Dict[str, Any]:
+    if lookup is None:
+        return {"sabr_lookup": None}
+    return {
+        "sabr_lookup": {
+            "requested_bucket": lookup.requested_bucket,
+            "used_bucket": lookup.used_bucket,
+            "used_fallback": lookup.used_fallback,
+            "reason": lookup.reason,
+        }
+    }
+
+
+def _lookup_warnings(
+    trade,
+    lookup: Optional[SabrLookupResult],
+    market_state: MarketState,
+) -> List[str]:
+    if lookup is None or not lookup.used_fallback:
+        return []
+    if market_state.pricing_policy.sabr_bucket_fallback != "warn":
+        return []
+    return [
+        (
+            f"{trade.instrument_type} used SABR fallback bucket "
+            f"{lookup.used_bucket} for requested {lookup.requested_bucket}."
+        )
+    ]
+
+
+def _resolve_option_vol(
+    trade,
+    market_state: MarketState,
+    fallback_label: str,
+) -> Tuple[float, List[str]]:
+    warnings: List[str] = []
+    explicit_vol = trade.get("vol")
+    if explicit_vol is not None:
+        return float(explicit_vol), warnings
+
+    if not market_state.pricing_policy.allow_zero_option_vol:
+        raise ValueError(
+            f"No SABR parameters or explicit volatility available for {fallback_label}."
+        )
+
+    warnings.append(
+        f"{fallback_label} used zero-volatility fallback because no model or explicit vol was available."
+    )
+    return 0.0, warnings
+
+
+def price_trade(trade: TradeLike, market_state: MarketState) -> PricerOutput:
     """
-    Price a trade dict using the MarketState.
+    Price a trade using the supplied market state.
 
-    Expected trade keys (subset used per instrument):
-        instrument_type: BOND/UST, SWAP/IRS, FUT, SWAPTION, CAPLET
-        notional: currency or contract units
-        direction/pay_receive: direction flags
-        Dates/tenors/strike/vol as appropriate per instrument
+    Accepted payloads:
+        - legacy dict-style trade objects
+        - typed trades from ``rateslib.domain``
     """
-    inst = str(trade.get("instrument_type", "")).upper()
+    normalized_trade = normalize_trade(trade)
+    trade_data = normalized_trade.to_dict()
+    inst = str(normalized_trade.instrument_type).upper()
     curve_state = market_state.curve
+    resolved_market = resolve_market_convention_for_trade(
+        trade_data,
+        curve_currency=getattr(curve_state.discount_curve, "currency", None),
+    )
+    market_audit = {"market_convention": resolved_market.to_dict()}
 
     if inst in {"BOND", "UST"}:
-        pricer = BondPricer(curve_state.discount_curve)
-        settlement = trade["settlement"]
-        maturity = trade["maturity"]
-        coupon = float(trade.get("coupon", 0.0))
-        frequency = int(trade.get("frequency", 2))
-        face_value = float(trade.get("face_value", 100.0))
-        notional = float(trade.get("notional", face_value))
+        pricer = BondPricer(
+            curve_state.discount_curve,
+            conventions=resolved_market.bond_conventions,
+        )
+        settlement = trade_data["settlement"]
+        maturity = trade_data["maturity"]
+        coupon = float(trade_data.get("coupon", 0.0))
+        frequency = int(trade_data.get("frequency", 2))
+        face_value = float(trade_data.get("face_value", 100.0))
+        notional = float(trade_data.get("notional", face_value))
 
         dirty, clean, accrued = pricer.price(
             settlement=settlement,
@@ -62,387 +199,436 @@ def price_trade(trade: Dict[str, Any], market_state: MarketState) -> PricerOutpu
             frequency=frequency,
         )
         pv = dirty / face_value * notional
-        return PricerOutput(
-            instrument_type=inst,
-            pv=pv,
-            details={"dirty": dirty, "clean": clean, "accrued": accrued},
+        return _build_output(
+            normalized_trade,
+            market_state,
+            pv,
+            {"dirty": dirty, "clean": clean, "accrued": accrued},
+            audit_extra=market_audit,
         )
 
     if inst in {"SWAP", "IRS"}:
-        pricer = SwapPricer(curve_state.discount_curve, curve_state.projection_curve)
+        pricer = SwapPricer(
+            curve_state.discount_curve,
+            curve_state.projection_curve,
+            fixed_conventions=resolved_market.fixed_leg_conventions,
+            float_conventions=resolved_market.float_leg_conventions,
+        )
         pv = pricer.present_value(
-            effective=trade["effective"],
-            maturity=trade["maturity"],
-            notional=float(trade["notional"]),
-            fixed_rate=float(trade["fixed_rate"]),
-            pay_receive=str(trade.get("pay_receive", "PAY")).upper(),
+            effective=trade_data["effective"],
+            maturity=trade_data["maturity"],
+            notional=float(trade_data["notional"]),
+            fixed_rate=float(trade_data["fixed_rate"]),
+            pay_receive=str(trade_data.get("pay_receive", "PAY")).upper(),
         )
         dv01 = pricer.dv01(
-            effective=trade["effective"],
-            maturity=trade["maturity"],
-            notional=float(trade["notional"]),
-            fixed_rate=float(trade["fixed_rate"]),
-            pay_receive=str(trade.get("pay_receive", "PAY")).upper(),
+            effective=trade_data["effective"],
+            maturity=trade_data["maturity"],
+            notional=float(trade_data["notional"]),
+            fixed_rate=float(trade_data["fixed_rate"]),
+            pay_receive=str(trade_data.get("pay_receive", "PAY")).upper(),
         )
-        return PricerOutput(
-            instrument_type=inst,
-            pv=pv,
-            details={"dv01": dv01},
+        return _build_output(
+            normalized_trade,
+            market_state,
+            pv,
+            {"dv01": dv01},
+            audit_extra=market_audit,
         )
 
     if inst in {"FUT", "FUTURE", "FUTURES"}:
-        # Build contract specification
         contract = FuturesContract(
-            contract_code=trade.get("contract_code", "FUT"),
-            expiry=trade["expiry"],
-            contract_size=float(trade.get("contract_size", 1_000_000)),
-            tick_size=float(trade.get("tick_size", 0.0025)),
-            underlying_tenor=str(trade.get("underlying_tenor", "3M")),
+            contract_code=trade_data.get("contract_code", "FUT"),
+            expiry=trade_data["expiry"],
+            contract_size=float(trade_data.get("contract_size", 1_000_000)),
+            tick_size=float(trade_data.get("tick_size", 0.0025)),
+            underlying_tenor=str(trade_data.get("underlying_tenor", "3M")),
         )
-        
+
         pricer = FuturesPricer(curve_state.discount_curve)
         theoretical_price = pricer.theoretical_price(contract)
-        
-        # Get signed contract count (positive=long, negative=short)
-        num_contracts = int(trade.get("num_contracts", 1))
-        
-        # Compute DV01 using the pricer (handles sign internally)
+        num_contracts = int(trade_data.get("num_contracts", 1))
         dv01 = pricer.dv01(contract, num_contracts)
-        
-        # PV calculation for bump-and-reprice:
-        # If we have a trade_price, compute mark-to-market P&L
-        # Otherwise, PV represents the "model value" from current implied rate
-        trade_price = trade.get("trade_price")
+
+        trade_price = trade_data.get("trade_price")
         tick_size = contract.tick_size
-        tick_value = float(trade.get("tick_value", 6.25))  # Default SOFR tick value
-        
+        tick_value = float(trade_data.get("tick_value", 6.25))
+
         if trade_price is not None:
-            # P&L = (current_price - trade_price) / tick_size * tick_value * num_contracts
             price_change = theoretical_price - float(trade_price)
             pv = (price_change / tick_size) * tick_value * num_contracts
         else:
-            # No trade price: compute PV based on deviation from par (100.0)
-            # This allows bump-and-reprice to work - PV changes as curve changes
-            # Convention: long futures gains value when price > 100 (rates < 0)
-            # For typical positive-rate environment, use price deviation from current
-            # For bump-and-reprice, what matters is the CHANGE in PV, not absolute level
-            # So we use a consistent reference: PV = (price - 100) * sensitivity factor
-            # where sensitivity factor = (contract_size * tenor / 10000) per contract
-            # This gives us the same DV01 behavior as the formula
             tenor_years = DateUtils.tenor_to_years(contract.underlying_tenor)
-            sensitivity_per_contract = contract.contract_size * tenor_years / 100.0  # per price point
+            sensitivity_per_contract = contract.contract_size * tenor_years / 100.0
             pv = (theoretical_price - 100.0) * sensitivity_per_contract * num_contracts
-        
-        return PricerOutput(
-            instrument_type=inst,
-            pv=pv,
-            details={
+
+        return _build_output(
+            normalized_trade,
+            market_state,
+            pv,
+            {
                 "theoretical_price": theoretical_price,
                 "implied_rate": pricer.implied_rate(contract.expiry, contract.underlying_tenor),
                 "dv01": dv01,
                 "num_contracts": num_contracts,
                 "trade_price": trade_price,
             },
+            audit_extra=market_audit,
         )
 
     if inst == "SWAPTION":
-        expiry_tenor = trade["expiry_tenor"]
-        swap_tenor = trade["swap_tenor"]
-        strike_raw = trade.get("strike")
-        payer_receiver = str(trade.get("payer_receiver", "PAYER")).upper()
-        notional = float(trade.get("notional", 1.0))
-        vol_type = str(trade.get("vol_type", "NORMAL")).upper()
+        trade_obj = normalized_trade
+        if not isinstance(trade_obj, SwaptionTrade):
+            raise TypeError("Normalized SWAPTION trade has unexpected type")
 
-        pricer = SwaptionPricer(curve_state.discount_curve, curve_state.projection_curve)
-        forward, annuity = pricer.forward_swap_rate(
-            expiry=DateUtils.tenor_to_years(expiry_tenor),
-            tenor=DateUtils.tenor_to_years(swap_tenor),
+        pricer = SwaptionPricer(
+            curve_state.discount_curve,
+            curve_state.projection_curve,
+            fixed_freq=resolved_market.swaption_fixed_frequency or 2,
+            float_freq=resolved_market.swaption_float_frequency or 4,
         )
-        # Determine strike, defaulting to ATM if missing/invalid
-        if strike_raw is None or (isinstance(strike_raw, str) and strike_raw.upper() == "ATM"):
-            strike = forward
-        else:
-            try:
-                strike = float(strike_raw)
-            except Exception:
-                strike = forward
-        if strike <= 0:
-            strike = max(forward, 1e-6)
+        forward, annuity = pricer.forward_swap_rate(
+            expiry=DateUtils.tenor_to_years(trade_obj.expiry_tenor),
+            tenor=DateUtils.tenor_to_years(trade_obj.swap_tenor),
+        )
+        strike = _resolve_strike(trade_obj.strike, forward)
+        lookup = market_state.resolve_sabr_lookup(
+            trade_obj.expiry_tenor,
+            trade_obj.swap_tenor,
+            allow_fallback=True,
+        )
+        warnings = _lookup_warnings(trade_obj, lookup, market_state)
+        audit_extra = _lookup_to_audit(lookup)
 
-        sabr_params = market_state.get_sabr_params(expiry_tenor, swap_tenor)
-
-        if sabr_params:
+        if lookup is not None and lookup.params is not None:
             result = pricer.price_with_sabr(
-                expiry_tenor=expiry_tenor,
-                swap_tenor=swap_tenor,
+                expiry_tenor=trade_obj.expiry_tenor,
+                swap_tenor=trade_obj.swap_tenor,
                 K=strike,
-                sabr_params=sabr_params.to_sabr_params(),
-                vol_type=vol_type,
-                payer_receiver=payer_receiver,
-                notional=notional,
+                sabr_params=lookup.params.to_sabr_params(),
+                vol_type=trade_obj.vol_type,
+                payer_receiver=trade_obj.payer_receiver,
+                notional=trade_obj.notional,
             )
-            pv = result.price
-            details = {
-                "forward": result.forward_swap_rate,
-                "annuity": result.annuity,
-                "implied_vol": result.implied_vol,
-                "vol_type": vol_type,
-                "source_bucket": make_bucket_key(expiry_tenor, swap_tenor),
-                "strike": strike,
-            }
-            return PricerOutput(inst, pv, details)
+            return _build_output(
+                trade_obj,
+                market_state,
+                result.price,
+                {
+                    "forward": result.forward_swap_rate,
+                    "annuity": result.annuity,
+                    "implied_vol": result.implied_vol,
+                    "vol_type": trade_obj.vol_type,
+                    "source_bucket": lookup.used_bucket or make_bucket_key(trade_obj.expiry_tenor, trade_obj.swap_tenor),
+                    "strike": strike,
+                },
+                warnings=warnings,
+                audit_extra=_merge_audit_extras(market_audit, audit_extra),
+            )
 
-        # Fall back to flat vol pricing
-        vol = float(trade.get("vol", 0.0))
+        vol, vol_warnings = _resolve_option_vol(
+            trade_obj,
+            market_state,
+            fallback_label="SWAPTION",
+        )
+        warnings.extend(vol_warnings)
         pv = pricer.price(
             S=forward,
             K=strike,
-            T=DateUtils.tenor_to_years(expiry_tenor),
+            T=DateUtils.tenor_to_years(trade_obj.expiry_tenor),
             annuity=annuity,
             vol=vol,
-            vol_type=vol_type,
-            payer_receiver=payer_receiver,
-            notional=notional,
-            shift=float(trade.get("shift", 0.0)),
+            vol_type=trade_obj.vol_type,
+            payer_receiver=trade_obj.payer_receiver,
+            notional=trade_obj.notional,
+            shift=trade_obj.shift,
         )
-        return PricerOutput(
-            instrument_type=inst,
-            pv=pv,
-            details={"forward": forward, "annuity": annuity, "implied_vol": vol, "vol_type": vol_type, "strike": strike},
+        return _build_output(
+            trade_obj,
+            market_state,
+            pv,
+            {
+                "forward": forward,
+                "annuity": annuity,
+                "implied_vol": vol,
+                "vol_type": trade_obj.vol_type,
+                "strike": strike,
+            },
+            warnings=warnings,
+            audit_extra=_merge_audit_extras(market_audit, audit_extra),
         )
 
     if inst in {"CAPLET", "CAP", "CAPFLOOR"}:
-        start_date = trade["start_date"]
-        end_date = trade["end_date"]
-        strike_raw = trade.get("strike")
-        notional = float(trade.get("notional", 1.0))
-        vol_type = str(trade.get("vol_type", "NORMAL")).upper()
+        trade_obj = normalized_trade
+        if not isinstance(trade_obj, CapletTrade):
+            raise TypeError("Normalized CAPLET trade has unexpected type")
 
         pricer = CapletPricer(curve_state.discount_curve, curve_state.projection_curve)
-        sabr_params = market_state.get_sabr_params(trade.get("expiry_tenor", ""), trade.get("index_tenor", ""), allow_fallback=True)
+        lookup = market_state.resolve_sabr_lookup(
+            trade_obj.expiry_tenor,
+            trade_obj.index_tenor,
+            allow_fallback=True,
+        )
+        warnings = _lookup_warnings(trade_obj, lookup, market_state)
+        audit_extra = _lookup_to_audit(lookup)
 
-        if sabr_params:
-            # Compute forward to determine strike
+        if lookup is not None and lookup.params is not None:
             from ..conventions import year_fraction
+
             anchor = curve_state.discount_curve.anchor_date
             day_count = curve_state.discount_curve.day_count
-            T_start = year_fraction(anchor, start_date, day_count)
-            T_end = year_fraction(anchor, end_date, day_count)
-            F = pricer.forward_rate(T_start, T_end)
-            
-            # Resolve strike
-            if strike_raw is None or (isinstance(strike_raw, str) and strike_raw.upper() == "ATM"):
-                K = F
-            else:
-                try:
-                    K = float(strike_raw)
-                except Exception:
-                    K = F
-            if K <= 0:
-                K = max(F, 1e-6)
-            
+            t_start = year_fraction(anchor, trade_obj.start_date, day_count)
+            t_end = year_fraction(anchor, trade_obj.end_date, day_count)
+            forward = pricer.forward_rate(t_start, t_end)
+            strike = _resolve_strike(trade_obj.strike, forward)
+
             result = pricer.price_with_sabr(
-                start_date=start_date,
-                end_date=end_date,
-                K=K,
-                sabr_params=sabr_params.to_sabr_params(),
-                vol_type=vol_type,
-                notional=notional,
-                is_cap=trade.get("is_cap", True),
+                start_date=trade_obj.start_date,
+                end_date=trade_obj.end_date,
+                K=strike,
+                sabr_params=lookup.params.to_sabr_params(),
+                vol_type=trade_obj.vol_type,
+                notional=trade_obj.notional,
+                is_cap=trade_obj.is_cap,
             )
-            return PricerOutput(
-                instrument_type=inst,
-                pv=result.price,
-                details={
+            return _build_output(
+                trade_obj,
+                market_state,
+                result.price,
+                {
                     "forward": result.forward,
                     "discount_factor": result.discount_factor,
                     "implied_vol": result.implied_vol,
-                    "vol_type": vol_type,
+                    "vol_type": trade_obj.vol_type,
+                    "strike": strike,
                 },
+                warnings=warnings,
+                audit_extra=_merge_audit_extras(market_audit, audit_extra),
             )
 
-        expiry_tenor = trade.get("expiry_tenor", "0D")
-        index_tenor = trade.get("index_tenor", "3M")
         try:
-            expiry_years = DateUtils.tenor_to_years(expiry_tenor)
+            expiry_years = DateUtils.tenor_to_years(trade_obj.expiry_tenor)
         except Exception:
             expiry_years = 0.0
         try:
-            index_years = DateUtils.tenor_to_years(index_tenor)
+            index_years = DateUtils.tenor_to_years(trade_obj.index_tenor)
         except Exception:
             index_years = 0.25
 
-        delta_t = trade.get("delta_t", index_years)
-        vol = float(trade.get("vol", 0.0))
-        F = pricer.forward_rate(start=expiry_years, end=expiry_years + delta_t)
-        df = curve_state.discount_curve.discount_factor(expiry_years + delta_t)
-        if strike_raw is None or (isinstance(strike_raw, str) and strike_raw.upper() == "ATM"):
-            strike = F
-        else:
-            try:
-                strike = float(strike_raw)
-            except Exception:
-                strike = F
-        if strike <= 0:
-            strike = max(F, 1e-6)
+        delta_t = trade_obj.delta_t if trade_obj.delta_t is not None else index_years
+        vol, vol_warnings = _resolve_option_vol(
+            trade_obj,
+            market_state,
+            fallback_label="CAPLET",
+        )
+        warnings.extend(vol_warnings)
+        forward = pricer.forward_rate(start=expiry_years, end=expiry_years + delta_t)
+        discount_factor = curve_state.discount_curve.discount_factor(expiry_years + delta_t)
+        strike = _resolve_strike(trade_obj.strike, forward)
         pv = pricer.price(
-            F=F,
+            F=forward,
             K=strike,
             T=expiry_years,
-            df=df,
+            df=discount_factor,
             vol=vol,
-            vol_type=vol_type,
-            notional=notional,
+            vol_type=trade_obj.vol_type,
+            notional=trade_obj.notional,
             delta_t=delta_t or 0.25,
-            is_cap=trade.get("is_cap", True),
-            shift=float(trade.get("shift", 0.0)),
+            is_cap=trade_obj.is_cap,
+            shift=trade_obj.shift,
         )
-        return PricerOutput(
-            instrument_type=inst,
-            pv=pv,
-            details={"forward": F, "discount_factor": df, "implied_vol": vol, "vol_type": vol_type},
+        return _build_output(
+            trade_obj,
+            market_state,
+            pv,
+            {
+                "forward": forward,
+                "discount_factor": discount_factor,
+                "implied_vol": vol,
+                "vol_type": trade_obj.vol_type,
+                "strike": strike,
+            },
+            warnings=warnings,
+            audit_extra=_merge_audit_extras(market_audit, audit_extra),
         )
 
     raise ValueError(f"Unsupported instrument_type: {inst}")
 
 
-def risk_trade(trade: Dict[str, Any], market_state: MarketState, method: str = "bump") -> Dict[str, Any]:
+def risk_trade(trade: TradeLike, market_state: MarketState, method: str = "bump") -> Dict[str, Any]:
     """
     Compute risk for a trade using SABR-aware Greeks where applicable.
 
-    Currently returns SABR parameter sensitivities for options and DV01 for swaps/bonds.
+    Currently returns SABR parameter sensitivities for options and DV01 for
+    swaps/bonds.
     """
-    inst = str(trade.get("instrument_type", "")).upper()
+    normalized_trade = normalize_trade(trade)
+    trade_data = normalized_trade.to_dict()
+    inst = str(normalized_trade.instrument_type).upper()
     curve_state = market_state.curve
+    resolved_market = resolve_market_convention_for_trade(
+        trade_data,
+        curve_currency=getattr(curve_state.discount_curve, "currency", None),
+    )
 
     if inst in {"SWAP", "IRS"}:
-        pricer = SwapPricer(curve_state.discount_curve, curve_state.projection_curve)
+        pricer = SwapPricer(
+            curve_state.discount_curve,
+            curve_state.projection_curve,
+            fixed_conventions=resolved_market.fixed_leg_conventions,
+            float_conventions=resolved_market.float_leg_conventions,
+        )
         dv01 = pricer.dv01(
-            effective=trade["effective"],
-            maturity=trade["maturity"],
-            notional=float(trade["notional"]),
-            fixed_rate=float(trade["fixed_rate"]),
-            pay_receive=str(trade.get("pay_receive", "PAY")).upper(),
+            effective=trade_data["effective"],
+            maturity=trade_data["maturity"],
+            notional=float(trade_data["notional"]),
+            fixed_rate=float(trade_data["fixed_rate"]),
+            pay_receive=str(trade_data.get("pay_receive", "PAY")).upper(),
         )
         return {"dv01": dv01}
 
     if inst in {"BOND", "UST"}:
-        pricer = BondPricer(curve_state.discount_curve)
+        pricer = BondPricer(
+            curve_state.discount_curve,
+            conventions=resolved_market.bond_conventions,
+        )
         dv01 = pricer.compute_dv01(
-            settlement=trade["settlement"],
-            maturity=trade["maturity"],
-            coupon_rate=float(trade.get("coupon", 0.0)),
-            face_value=float(trade.get("face_value", 100.0)),
-            frequency=int(trade.get("frequency", 2)),
-            notional=float(trade.get("notional", 1_000_000)),
+            settlement=trade_data["settlement"],
+            maturity=trade_data["maturity"],
+            coupon_rate=float(trade_data.get("coupon", 0.0)),
+            face_value=float(trade_data.get("face_value", 100.0)),
+            frequency=int(trade_data.get("frequency", 2)),
+            notional=float(trade_data.get("notional", 1_000_000)),
         )
         return {"dv01": dv01}
 
     if inst == "SWAPTION":
-        expiry_tenor = trade["expiry_tenor"]
-        swap_tenor = trade["swap_tenor"]
-        strike_raw = trade.get("strike")
-        payer_receiver = str(trade.get("payer_receiver", "PAYER")).upper()
-        notional = float(trade.get("notional", 1.0))
-        vol_type = str(trade.get("vol_type", "NORMAL")).upper()
+        trade_obj = normalized_trade
+        if not isinstance(trade_obj, SwaptionTrade):
+            raise TypeError("Normalized SWAPTION trade has unexpected type")
 
-        sabr_params = market_state.get_sabr_params(expiry_tenor, swap_tenor, allow_fallback=True)
-        if sabr_params is None:
+        lookup = market_state.resolve_sabr_lookup(
+            trade_obj.expiry_tenor,
+            trade_obj.swap_tenor,
+            allow_fallback=True,
+        )
+        if lookup is None or lookup.params is None:
+            if market_state.pricing_policy.sabr_bucket_fallback == "error":
+                raise ValueError(
+                    f"No SABR parameters available for {trade_obj.expiry_tenor} x {trade_obj.swap_tenor}."
+                )
             return {}
 
-        pricer = SwaptionPricer(curve_state.discount_curve, curve_state.projection_curve)
-        forward, annuity = pricer.forward_swap_rate(
-            expiry=DateUtils.tenor_to_years(expiry_tenor),
-            tenor=DateUtils.tenor_to_years(swap_tenor),
+        pricer = SwaptionPricer(
+            curve_state.discount_curve,
+            curve_state.projection_curve,
+            fixed_freq=resolved_market.swaption_fixed_frequency or 2,
+            float_freq=resolved_market.swaption_float_frequency or 4,
         )
-        # Resolve strike with ATM default
-        if strike_raw is None or (isinstance(strike_raw, str) and str(strike_raw).upper() == "ATM"):
-            strike = forward
-        else:
-            try:
-                strike = float(strike_raw)
-            except Exception:
-                strike = forward
-        if strike <= 0:
-            strike = max(forward, 1e-6)
-        risk_engine = SabrOptionRisk(vol_type=vol_type)
-        # Compute SABR vol for greeks aggregation
+        forward, annuity = pricer.forward_swap_rate(
+            expiry=DateUtils.tenor_to_years(trade_obj.expiry_tenor),
+            tenor=DateUtils.tenor_to_years(trade_obj.swap_tenor),
+        )
+        strike = _resolve_strike(trade_obj.strike, forward)
+        risk_engine = SabrOptionRisk(vol_type=trade_obj.vol_type)
+
         from ..vol.sabr import SabrModel
-        T = DateUtils.tenor_to_years(expiry_tenor)
+
+        t_expiry = DateUtils.tenor_to_years(trade_obj.expiry_tenor)
         model = SabrModel()
-        if vol_type == "NORMAL":
-            implied_vol = model.implied_vol_normal(forward, strike, T, sabr_params.to_sabr_params())
+        if trade_obj.vol_type == "NORMAL":
+            implied_vol = model.implied_vol_normal(
+                forward,
+                strike,
+                t_expiry,
+                lookup.params.to_sabr_params(),
+            )
         else:
-            implied_vol = model.implied_vol_black(forward, strike, T, sabr_params.to_sabr_params())
+            implied_vol = model.implied_vol_black(
+                forward,
+                strike,
+                t_expiry,
+                lookup.params.to_sabr_params(),
+            )
         sens = risk_engine.parameter_sensitivities(
             F=forward,
             K=strike,
-            T=T,
-            sabr_params=sabr_params.to_sabr_params(),
+            T=t_expiry,
+            sabr_params=lookup.params.to_sabr_params(),
             annuity=annuity,
-            is_call=(payer_receiver == "PAYER"),
-            notional=notional,
+            is_call=(trade_obj.payer_receiver == "PAYER"),
+            notional=trade_obj.notional,
         )
         greeks = pricer.greeks(
             S=forward,
             K=strike,
-            T=T,
+            T=t_expiry,
             annuity=annuity,
             vol=implied_vol,
-            vol_type=vol_type,
-            payer_receiver=payer_receiver,
-            notional=notional,
+            vol_type=trade_obj.vol_type,
+            payer_receiver=trade_obj.payer_receiver,
+            notional=trade_obj.notional,
         )
         return {"sabr_sensitivities": sens, "forward": forward, "annuity": annuity, "greeks": greeks}
 
     if inst in {"CAPLET", "CAP", "CAPFLOOR"}:
-        expiry_tenor = trade.get("expiry_tenor", "0D")
-        index_tenor = trade.get("index_tenor", "3M")
-        strike_raw = trade.get("strike")
-        notional = float(trade.get("notional", 1.0))
-        vol_type = str(trade.get("vol_type", "NORMAL")).upper()
+        trade_obj = normalized_trade
+        if not isinstance(trade_obj, CapletTrade):
+            raise TypeError("Normalized CAPLET trade has unexpected type")
 
-        sabr_params = market_state.get_sabr_params(expiry_tenor, index_tenor, allow_fallback=True)
-        if sabr_params is None:
+        lookup = market_state.resolve_sabr_lookup(
+            trade_obj.expiry_tenor,
+            trade_obj.index_tenor,
+            allow_fallback=True,
+        )
+        if lookup is None or lookup.params is None:
+            if market_state.pricing_policy.sabr_bucket_fallback == "error":
+                raise ValueError(
+                    f"No SABR parameters available for {trade_obj.expiry_tenor} x {trade_obj.index_tenor}."
+                )
             return {}
 
         pricer = CapletPricer(curve_state.discount_curve, curve_state.projection_curve)
         try:
-            start = DateUtils.tenor_to_years(expiry_tenor)
+            start = DateUtils.tenor_to_years(trade_obj.expiry_tenor)
         except Exception:
             start = 0.0
         try:
-            index_years = DateUtils.tenor_to_years(index_tenor)
+            index_years = DateUtils.tenor_to_years(trade_obj.index_tenor)
         except Exception:
             index_years = 0.25
-        delta_t = trade.get("delta_t", index_years)
+        delta_t = trade_obj.delta_t if trade_obj.delta_t is not None else index_years
         end = start + delta_t
         forward = pricer.forward_rate(start, end) if end > start else 0.0
         annuity = curve_state.discount_curve.discount_factor(end) if end >= 0 else 1.0
-        if strike_raw is None or (isinstance(strike_raw, str) and strike_raw.upper() == "ATM"):
-            strike = forward
-        else:
-            try:
-                strike = float(strike_raw)
-            except Exception:
-                strike = forward
-        if strike <= 0:
-            strike = max(forward, 1e-6)
-        risk_engine = SabrOptionRisk(vol_type=vol_type)
+        strike = _resolve_strike(trade_obj.strike, forward)
+        risk_engine = SabrOptionRisk(vol_type=trade_obj.vol_type)
+
         from ..vol.sabr import SabrModel
+
         model = SabrModel()
-        if vol_type == "NORMAL":
-            implied_vol = model.implied_vol_normal(forward, strike, start, sabr_params.to_sabr_params())
+        if trade_obj.vol_type == "NORMAL":
+            implied_vol = model.implied_vol_normal(
+                forward,
+                strike,
+                start,
+                lookup.params.to_sabr_params(),
+            )
         else:
-            implied_vol = model.implied_vol_black(forward, strike, start, sabr_params.to_sabr_params())
+            implied_vol = model.implied_vol_black(
+                forward,
+                strike,
+                start,
+                lookup.params.to_sabr_params(),
+            )
         sens = risk_engine.parameter_sensitivities(
             F=forward,
             K=strike,
             T=start,
-            sabr_params=sabr_params.to_sabr_params(),
+            sabr_params=lookup.params.to_sabr_params(),
             annuity=annuity,
-            is_call=trade.get("is_cap", True),
-            notional=notional,
+            is_call=trade_obj.is_cap,
+            notional=trade_obj.notional,
         )
         greeks = pricer.greeks(
             F=forward,
@@ -450,10 +636,10 @@ def risk_trade(trade: Dict[str, Any], market_state: MarketState, method: str = "
             T=start,
             df=annuity,
             vol=implied_vol,
-            vol_type=vol_type,
-            notional=notional,
+            vol_type=trade_obj.vol_type,
+            notional=trade_obj.notional,
             delta_t=delta_t or 0.25,
-            is_cap=trade.get("is_cap", True),
+            is_cap=trade_obj.is_cap,
         )
         return {"sabr_sensitivities": sens, "forward": forward, "annuity": annuity, "greeks": greeks}
 
