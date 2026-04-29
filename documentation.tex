@@ -118,9 +118,13 @@
 The \textbf{Rates Risk Library} (\code{rateslib}) is a comprehensive Python library designed for USD yield curve construction, fixed-income instrument pricing, and risk analytics. It provides a complete toolkit for trading desk workflows including:
 
 \begin{itemize}
+    \item Calendar-aware settlement, tenor advancement, and coupon schedule generation
+    \item Product and currency-aware market convention resolution
+    \item Typed trade normalization while preserving legacy dictionary inputs
     \item Real-time risk monitoring with DV01 and key-rate duration
     \item P\&L attribution and explain (linear and options)
     \item Value-at-Risk (VaR) calculations (historical, Monte Carlo, stressed)
+    \item VaR backtesting with Kupiec, Christoffersen, and traffic-light diagnostics
     \item Scenario analysis and stress testing with curve and vol shocks
     \item SABR volatility surface calibration and smile-consistent pricing
     \item Options pricing (caplets, swaptions) with model-consistent Greeks
@@ -140,11 +144,14 @@ The library is organized into the following modules:
 \textbf{Module} & \textbf{Description} \\
 \midrule
 \code{conventions} & Day count conventions, business day adjustments, compounding conventions \\
+\code{calendars} & Weekend-only, explicit-holiday, and US federal-style business calendars \\
 \code{dates} & Date utilities, tenor parsing, schedule generation \\
+\code{domain} & Typed trade models, trade normalization, and pricing policy controls \\
+\code{market\_conventions} & Named market templates and product/currency convention resolution \\
 \code{curves} & Yield curve construction, bootstrapping, Nelson-Siegel-Svensson fitting \\
 \code{pricers} & Bond, swap, and futures pricing engines with dispatcher \\
 \code{risk} & DV01, key-rate duration, convexity, bump-and-reprice framework, limit monitoring \\
-\code{var} & Historical simulation, Monte Carlo VaR, stressed VaR, scenario engine \\
+\code{var} & Historical simulation, Monte Carlo VaR, stressed VaR, scenario engine, backtesting \\
 \code{pnl} & P\&L attribution for linear and options (Greeks-based decomposition) \\
 \code{vol} & SABR model, volatility surface with bucketing, calibration, wildcard support \\
 \code{options} & Caplet/swaption pricing, SABR-consistent Greeks (delta, vega, vanna, volga) \\
@@ -258,6 +265,36 @@ Move to the next business day if the date falls on a non-business day.
 Move to the previous business day if the date falls on a non-business day.
 \end{definition}
 
+\section{Business Calendars}
+
+The library supports explicit calendar objects in addition to the original weekend-only behavior. Calendar-aware functions accept \code{None}, a \code{BusinessCalendar} instance, or an iterable of holiday dates.
+
+\begin{itemize}
+    \item \code{WeekendOnlyCalendar}: Saturdays and Sundays are non-business days.
+    \item \code{ExplicitHolidayCalendar}: weekends plus a caller-provided holiday set.
+    \item \code{UnitedStatesHolidayCalendar}: practical US federal-style holiday rules for USD rates examples.
+\end{itemize}
+
+\begin{lstlisting}
+from datetime import date
+from rateslib import UnitedStatesHolidayCalendar, advance_business_days
+from rateslib.dates import DateUtils
+
+calendar = UnitedStatesHolidayCalendar()
+
+# July 4, 2024 is a US holiday, so the following business day is July 5.
+settlement = advance_business_days(date(2024, 7, 3), 1, calendar)
+
+# Spot dates and tenor advancement can use the same calendar.
+spot = DateUtils.spot_date(date(2024, 1, 15), settlement_days=2, holidays=calendar)
+maturity = DateUtils.add_tenor(
+    spot,
+    "5Y",
+    holidays=calendar,
+    adjust_to_business_day=True,
+)
+\end{lstlisting}
+
 \section{Compounding Conventions}
 
 The library supports multiple compounding conventions for interest rate calculations:
@@ -295,6 +332,19 @@ swap_conv = Conventions.usd_swap()
 # Day count: ACT/360, Semi-annual fixed leg
 \end{lstlisting}
 
+For product-aware defaults, use \code{market\_conventions}. The dispatcher resolves templates from an explicit trade template, trade currency, or curve currency before falling back to legacy pricer defaults.
+
+\begin{lstlisting}
+from rateslib import available_market_conventions, resolve_market_convention_for_trade
+
+templates = available_market_conventions()
+trade = {"instrument_type": "SWAP", "currency": "USD"}
+resolved = resolve_market_convention_for_trade(trade, curve_currency="USD")
+
+print(sorted(templates))
+print(resolved.template_id)  # USD_VANILLA_SWAP
+\end{lstlisting}
+
 \section{Date Utilities}
 
 \subsection{Tenor Parsing}
@@ -320,13 +370,15 @@ years = DateUtils.tenor_to_years("6M")  # 0.5
 \subsection{Schedule Generation}
 
 \begin{lstlisting}
-from rateslib.dates import generate_bond_schedule, generate_swap_schedule
+from datetime import date
+from rateslib import DayCount
+from rateslib.dates import generate_bond_schedule
 
 # Generate bond payment schedule
 schedule = generate_bond_schedule(
-    settlement=date(2024, 1, 15),
+    settle=date(2024, 1, 15),
     maturity=date(2029, 1, 15),
-    frequency=2,  # Semi-annual
+    coupon_freq=2,  # Semi-annual
     day_count=DayCount.ACT_ACT
 )
 \end{lstlisting}
@@ -1144,14 +1196,15 @@ print(f"  Residual: ${attribution.components.residual:,.2f}")
 The library uses a unified \code{MarketState} container to encapsulate all market data required for pricing and risk:
 
 \begin{lstlisting}
-from rateslib import MarketState, CurveState
+from rateslib import MarketState, CurveState, PricingPolicy
 
 # Create market state
 market_state = MarketState(
     curve=CurveState(discount_curve=ois_curve,
-                     projection_curve=libor_curve),
+                     projection_curve=projection_curve),
     sabr_surface=sabr_surface,  # Optional
-    asof=date(2024, 1, 15)
+    asof=date(2024, 1, 15),
+    pricing_policy=PricingPolicy(sabr_bucket_fallback="warn")
 )
 \end{lstlisting}
 
@@ -1164,11 +1217,22 @@ The \code{CurveState} wraps discount and projection curves:
 class CurveState:
     discount_curve: Curve
     projection_curve: Optional[Curve] = None
+    metadata: Dict[str, Any] = field(default_factory=dict)
     
-    def get_projection_curve(self) -> Curve:
-        """Get projection curve, defaulting to discount."""
-        return self.projection_curve or self.discount_curve
+    def forward_rate(self, t_start: float, t_end: float) -> float
+    def copy(self, discount_curve: Optional[Curve] = None,
+             projection_curve: Optional[Curve] = None) -> "CurveState"
 \end{lstlisting}
+
+\subsection{PricingPolicy}
+
+\code{PricingPolicy} controls model fallback behavior and audit metadata in dispatcher-based pricing:
+
+\begin{itemize}
+    \item \code{sabr\_bucket\_fallback}: \code{"allow"}, \code{"warn"}, or \code{"error"}.
+    \item \code{allow\_zero\_option\_vol}: whether options may price with zero-vol fallback when neither explicit vol nor SABR parameters are available.
+    \item \code{record\_audit}: whether \code{price\_trade} includes pricing-policy, market-convention, and SABR lookup details.
+\end{itemize}
 
 \subsection{SABR Surface State}
 
@@ -1191,7 +1255,7 @@ sabr_surface = SabrSurfaceState(
             sigma_atm=0.0070, beta=0.5, rho=-0.18, nu=0.42
         )
     },
-    missing_bucket_policy="nearest"  # Or "wildcard"
+    missing_bucket_policy="nearest"
 )
 
 # Query parameters
@@ -1223,6 +1287,7 @@ from rateslib.portfolio import (
     build_swap_trade,
     build_swaption_trade,
     build_caplet_trade,
+    build_typed_trade_from_position,
     build_trade_from_position,
 )
 
@@ -1230,8 +1295,8 @@ from rateslib.portfolio import (
 try:
     trade = build_trade_from_position(
         position_row,
-        market_state,
-        valuation_date
+        valuation_date,
+        typed=True,
     )
     pv = price_trade(trade, market_state).pv
 except PositionValidationError as e:
@@ -1257,7 +1322,7 @@ print(f"Total PV: ${result.total_pv:,.2f}")
 print(f"Positions priced: {result.successful_count}")
 print(f"Positions failed: {result.failed_count}")
 
-for failure in result.failures:
+for failure in result.failed_trades:
     print(f"  {failure.position_id}: {failure.error_message}")
 \end{lstlisting}
 
@@ -1283,6 +1348,7 @@ The SABR integration is \textbf{fully complete} as of v0.1.0:
     \item \checkmark Risk reports include \textbf{model-consistent Greeks}: delta with smile-dynamics correction ($\Delta_{\text{SABR}}$), and vega/vanna/volga.
     \item \checkmark Production-grade portfolio builders with validation and failure diagnostics.
     \item \checkmark Wildcard bucket support (\code{("ALL", "ALL")}) for sparse calibration.
+    \item \checkmark Pricing policies and structured SABR lookup diagnostics for controlled fallback behavior.
     \item \checkmark Options P\&L attribution with Greeks-based decomposition.
     \item \checkmark Comprehensive dashboard with SABR visualization across 8 tabs.
 \end{enumerate}
@@ -1367,7 +1433,6 @@ At ATM ($K=F$), this simplifies to:
 
 \begin{lstlisting}
 from rateslib import (
-    OISBootstrapper,
     build_sabr_surface,
     normalize_vol_quotes,
     MarketState,
@@ -1376,6 +1441,7 @@ from rateslib import (
     price_trade,
     SabrOptionRisk,
 )
+from rateslib.curves.bootstrap import bootstrap_from_quotes
 from datetime import date
 import pandas as pd
 
@@ -1383,10 +1449,16 @@ valuation_date = date(2024, 1, 15)
 
 # 1. Build an OIS curve from sample quotes
 ois_quotes = pd.read_csv("data/sample_quotes/ois_quotes.csv", comment="#")
-bootstrapper = OISBootstrapper(valuation_date)
-for _, row in ois_quotes.iterrows():
-    bootstrapper.add_quote(str(row["tenor"]), float(row["rate"]))
-ois_curve = bootstrapper.bootstrap().curve
+curve_quotes = [
+    {
+        "instrument_type": "OIS",
+        "tenor": row["tenor"],
+        "quote": row["rate"],
+        "day_count": "ACT/360",
+    }
+    for _, row in ois_quotes.iterrows()
+]
+ois_curve = bootstrap_from_quotes(valuation_date, curve_quotes)
 
 curve_state = CurveState(
     discount_curve=ois_curve,
@@ -1410,9 +1482,10 @@ swaption_pos = positions_df[positions_df["instrument_type"] == "SWAPTION"].iloc[
 swaption_trade = build_trade_from_position(swaption_pos, valuation_date)
 
 price_result = price_trade(swaption_trade, market_state)
+details = price_result.details
 print(f"PV: ${price_result.pv:,.2f}")
-print(f"Forward: {price_result.forward*100:.3f}%")
-print(f"Implied Vol: {price_result.implied_vol*10000:.1f} bp")
+print(f"Forward: {details['forward']*100:.3f}%")
+print(f"Implied Vol: {details['implied_vol']*10000:.1f} bp")
 
 # 6. Compute SABR-consistent risk
 risk_engine = SabrOptionRisk(vol_type="NORMAL")
@@ -1423,11 +1496,11 @@ sabr_params = params.to_sabr_params()
 
 # Compute risk report
 risk_report = risk_engine.risk_report(
-    F=price_result.forward,
-    K=price_result.forward,  # ATM
+    F=details["forward"],
+    K=details["forward"],  # ATM
     T=1.0,  # 1 year to expiry
     sabr_params=sabr_params,
-    annuity=price_result.annuity,
+    annuity=details["annuity"],
     is_call=True,
     notional=float(swaption_trade.get("notional", 1.0))
 )
@@ -1946,6 +2019,59 @@ if var_state:
 %===============================================================================
 \chapter{API Reference}
 
+\section{Package Root Exports}
+
+The package root intentionally re-exports the primary workflow objects so examples can import from \code{rateslib} without reaching into implementation modules. The current root API includes the following groups:
+
+\begin{lstlisting}
+# Version
+__version__
+
+# Calendars, conventions, and dates
+BusinessCalendar, WeekendOnlyCalendar, ExplicitHolidayCalendar,
+UnitedStatesHolidayCalendar, DayCount, BusinessDayConvention,
+Conventions, advance_business_days, year_fraction,
+DateUtils, ScheduleInfo
+
+# Typed trades, policies, and market conventions
+PricingPolicy, TradeNormalizationError, TradeBase, BondTrade,
+SwapTrade, FuturesTrade, SwaptionTrade, CapletTrade, normalize_trade,
+ConventionSpec, MarketConventionTemplate, ResolvedMarketConvention,
+MarketConventionError, STANDARD_MARKET_TEMPLATES,
+available_market_conventions, get_market_convention,
+resolve_market_convention_for_trade
+
+# Curves, pricers, dispatcher, and portfolio builders
+Curve, OISBootstrapper, NelsonSiegelSvensson,
+LinearInterpolator, CubicSplineInterpolator, LogLinearInterpolator,
+BondPricer, SwapPricer, FuturesPricer, FuturesContract,
+price_trade, risk_trade, PricerOutput,
+build_bond_trade, build_swap_trade, build_swaption_trade,
+build_caplet_trade, build_typed_trade_from_position,
+build_trade_from_position, price_portfolio_with_diagnostics,
+PortfolioPricingResult, TradeFailure, SIGN_LONG, SIGN_SHORT,
+PositionValidationError, MissingFieldError, InvalidOptionError
+
+# Risk, VaR, reporting, liquidity, vol, and options
+BumpEngine, RiskCalculator, KeyRateEngine, InstrumentRisk,
+PortfolioRisk, LimitDefinition, LimitResult, DEFAULT_LIMITS,
+evaluate_limits, limits_to_table, compute_limit_metrics,
+HistoricalSimulation, MonteCarloVaR, StressedVaR, ScenarioEngine,
+STANDARD_SCENARIOS, VaRBacktestResult, backtest_var,
+kupiec_pof_test, christoffersen_independence_test, traffic_light,
+rolling_historical_var_backtest, PnLAttributionEngine, PnLAttribution,
+RiskReport, ReportFormatter, export_to_csv,
+LiquidityEngine, LiquidityAdjustedVaR,
+SabrParams, SabrModel, SabrCalibrator, VolQuote, load_vol_quotes,
+hagan_black_vol, hagan_normal_vol, normalize_vol_quotes,
+SabrSurfaceState, SabrBucketParams, SabrLookupResult,
+make_bucket_key, calibrate_sabr_bucket, build_sabr_surface,
+bachelier_call, bachelier_put, black76_call, black76_put,
+shifted_black_call, shifted_black_put, bachelier_greeks,
+black76_greeks, CapletPricer, SwaptionPricer, SabrOptionRisk,
+CurveState, MarketState
+\end{lstlisting}
+
 \section{Conventions Module}
 
 \subsection{DayCount Enum}
@@ -1971,6 +2097,9 @@ class Conventions:
     compounding: CompoundingConvention = CompoundingConvention.CONTINUOUS
     payment_frequency: int = 1
     settlement_days: int = 2
+    holiday_calendar: CalendarInput = None
+    end_of_month: bool = False
+    stub: str = "short_front"
     
     @classmethod
     def usd_ois(cls) -> "Conventions"
@@ -1990,6 +2119,211 @@ def year_fraction(
     end: date, 
     day_count: DayCount
 ) -> float
+
+def advance_business_days(
+    start: date,
+    business_days: int,
+    holidays: CalendarInput = None
+) -> date
+\end{lstlisting}
+
+\section{Calendars Module}
+
+\begin{lstlisting}
+@dataclass
+class BusinessCalendar:
+    weekend_days: Set[int] = field(default_factory=lambda: {5, 6})
+
+    def holiday_dates(self, year: int) -> Set[date]
+    def holidays(self, year: int) -> Set[date]
+    def is_business_day(self, d: date) -> bool
+
+@dataclass
+class WeekendOnlyCalendar(BusinessCalendar): ...
+
+@dataclass
+class ExplicitHolidayCalendar(BusinessCalendar):
+    holiday_set: Set[date] = field(default_factory=set)
+
+@dataclass
+class UnitedStatesHolidayCalendar(BusinessCalendar):
+    include_columbus_day: bool = True
+    include_veterans_day: bool = True
+
+def calendar_from_input(calendar_input: Optional[object]) -> BusinessCalendar
+\end{lstlisting}
+
+\section{Dates Module}
+
+\begin{lstlisting}
+class DateUtils:
+    def parse_tenor(tenor: str) -> Tuple[int, str]
+    def add_business_days(
+        start: date,
+        business_days: int,
+        holidays: CalendarInput = None
+    ) -> date
+    def spot_date(
+        trade_date: date,
+        settlement_days: int = 2,
+        holidays: CalendarInput = None
+    ) -> date
+    def add_tenor(
+        start: date,
+        tenor: str,
+        holidays: CalendarInput = None,
+        adjust_to_business_day: bool = False,
+        business_day_convention: BusinessDayConvention = BusinessDayConvention.MODIFIED_FOLLOWING,
+        end_of_month: bool = False
+    ) -> date
+    def tenor_to_years(tenor: str) -> float
+    def generate_schedule(
+        start: date,
+        end: date,
+        frequency: int,
+        convention: BusinessDayConvention = BusinessDayConvention.MODIFIED_FOLLOWING,
+        holidays: CalendarInput = None,
+        stub: str = "short_front",
+        end_of_month: bool = False
+    ) -> List[date]
+
+@dataclass
+class ScheduleInfo:
+    payment_dates: List[date]
+    accrual_starts: List[date]
+    accrual_ends: List[date]
+    year_fractions: List[float]
+    day_count: DayCount
+    unadjusted_payment_dates: Optional[List[date]] = None
+    stub_type: str = "short_front"
+    end_of_month: bool = False
+\end{lstlisting}
+
+\section{Domain Module}
+
+The \code{domain} module is the boundary between external dictionary payloads and internal pricing/risk engines. Existing dictionary APIs remain supported, but dispatcher workflows normalize inputs into typed trade dataclasses.
+
+\begin{lstlisting}
+@dataclass(frozen=True)
+class PricingPolicy:
+    sabr_bucket_fallback: str = "allow"  # "allow", "warn", or "error"
+    allow_zero_option_vol: bool = True
+    record_audit: bool = True
+
+@dataclass(frozen=True)
+class TradeBase:
+    instrument_type: str
+    trade_id: Optional[str] = None
+    metadata: Dict[str, Any] = field(default_factory=dict)
+
+@dataclass(frozen=True)
+class BondTrade(TradeBase):
+    settlement: date = field(default_factory=date.today)
+    maturity: date = field(default_factory=date.today)
+    coupon: float = 0.0
+    notional: float = 1.0
+    frequency: int = 2
+    face_value: float = 100.0
+
+@dataclass(frozen=True)
+class SwapTrade(TradeBase):
+    effective: date = field(default_factory=date.today)
+    maturity: date = field(default_factory=date.today)
+    notional: float = 1.0
+    fixed_rate: float = 0.0
+    pay_receive: str = "PAY"
+
+@dataclass(frozen=True)
+class FuturesTrade(TradeBase):
+    expiry: date = field(default_factory=date.today)
+    contract_code: str = "FUT"
+    contract_size: float = 1_000_000.0
+    tick_size: float = 0.0025
+    tick_value: float = 6.25
+    underlying_tenor: str = "3M"
+    num_contracts: int = 1
+    trade_price: Optional[float] = None
+
+@dataclass(frozen=True)
+class SwaptionTrade(TradeBase):
+    expiry_tenor: str = "1Y"
+    swap_tenor: str = "5Y"
+    strike: Any = "ATM"
+    payer_receiver: str = "PAYER"
+    notional: float = 1.0
+    vol_type: str = "NORMAL"
+    vol: Optional[float] = None
+    shift: float = 0.0
+
+@dataclass(frozen=True)
+class CapletTrade(TradeBase):
+    start_date: date = field(default_factory=date.today)
+    end_date: date = field(default_factory=date.today)
+    strike: Any = "ATM"
+    notional: float = 1.0
+    is_cap: bool = True
+    vol_type: str = "NORMAL"
+    expiry_tenor: str = "0D"
+    index_tenor: str = "3M"
+    delta_t: Optional[float] = None
+    vol: Optional[float] = None
+    shift: float = 0.0
+
+def normalize_trade(trade: TradeLike) -> TypedTrade
+\end{lstlisting}
+
+\section{Market Conventions Module}
+
+\begin{lstlisting}
+@dataclass(frozen=True)
+class ConventionSpec:
+    day_count: DayCount
+    business_day: BusinessDayConvention
+    compounding: CompoundingConvention = CompoundingConvention.CONTINUOUS
+    payment_frequency: int = 1
+    settlement_days: int = 2
+    holiday_calendar: str = "WEEKEND_ONLY"
+    end_of_month: bool = False
+    stub: str = "short_front"
+
+@dataclass(frozen=True)
+class MarketConventionTemplate:
+    template_id: str
+    currency: str
+    instrument_family: str
+    description: str
+    bond: Optional[ConventionSpec] = None
+    fixed_leg: Optional[ConventionSpec] = None
+    float_leg: Optional[ConventionSpec] = None
+    swaption_fixed_frequency: Optional[int] = None
+    swaption_float_frequency: Optional[int] = None
+    default_underlying_tenor: Optional[str] = None
+    tags: Tuple[str, ...] = ()
+
+@dataclass
+class ResolvedMarketConvention:
+    instrument_type: str
+    currency: Optional[str]
+    source: str
+    template: Optional[MarketConventionTemplate] = None
+    bond_conventions: Optional[Conventions] = None
+    fixed_leg_conventions: Optional[Conventions] = None
+    float_leg_conventions: Optional[Conventions] = None
+
+STANDARD_MARKET_TEMPLATES = {
+    "USD_UST": ...,
+    "USD_VANILLA_SWAP": ...,
+    "USD_VANILLA_SWAPTION": ...,
+    "USD_CAPLET": ...,
+    "USD_FUTURE": ...,
+}
+
+def available_market_conventions() -> Dict[str, MarketConventionTemplate]
+def get_market_convention(template_id: str) -> MarketConventionTemplate
+def resolve_market_convention_for_trade(
+    trade: Any,
+    curve_currency: Optional[str] = None
+) -> ResolvedMarketConvention
 \end{lstlisting}
 
 \section{Curves Module}
@@ -2013,9 +2347,24 @@ class Curve:
     def zero_rate(self, t: Union[float, date], 
                   compounding: CompoundingConvention = ...) -> float
     def forward_rate(self, t1: float, t2: float) -> float
+    def instantaneous_forward(self, t: Union[float, date]) -> float
     def bump_parallel(self, bp: float) -> "Curve"
+    def bump_node(self, node_index: int, bp: float) -> "Curve"
     def bump_tenor(self, tenor: str, bp: float) -> "Curve"
     def copy(self) -> "Curve"
+\end{lstlisting}
+
+\subsection{Interpolation Classes}
+
+\begin{lstlisting}
+class Interpolator:
+    def fit(self, times: np.ndarray, values: np.ndarray) -> None
+    def interpolate(self, t: float) -> float
+    def derivative(self, t: float) -> float
+
+class LinearInterpolator(Interpolator): ...
+class CubicSplineInterpolator(Interpolator): ...
+class LogLinearInterpolator(Interpolator): ...
 \end{lstlisting}
 
 \subsection{OISBootstrapper Class}
@@ -2147,6 +2496,61 @@ class SwapPricer:
     ) -> SwapCashflows
 \end{lstlisting}
 
+\subsection{FuturesPricer Class}
+
+\begin{lstlisting}
+@dataclass
+class FuturesContract:
+    contract_code: str
+    expiry: date
+    contract_size: float = 1_000_000.0
+    tick_size: float = 0.0025
+    tick_value: float = 6.25
+    underlying_tenor: str = "3M"
+
+    @classmethod
+    def sofr_3m(cls, expiry: date) -> "FuturesContract"
+
+    @classmethod
+    def fed_funds_30d(cls, expiry: date) -> "FuturesContract"
+
+class FuturesPricer:
+    def __init__(self, curve: Curve)
+    def implied_rate(self, expiry: date, underlying_tenor: str = "3M") -> float
+    def price_from_rate(self, rate: float) -> float
+    def rate_from_price(self, price: float) -> float
+    def theoretical_price(self, contract: FuturesContract) -> float
+    def dv01(self, contract: FuturesContract, num_contracts: int = 1) -> float
+    def position_pv(
+        self,
+        contract: FuturesContract,
+        num_contracts: int,
+        trade_price: float
+    ) -> Tuple[float, float, float]
+\end{lstlisting}
+
+\subsection{Dispatcher API}
+
+\begin{lstlisting}
+@dataclass
+class PricerOutput:
+    instrument_type: str
+    pv: float
+    details: Dict[str, Any]
+    warnings: List[str] = field(default_factory=list)
+    audit: Dict[str, Any] = field(default_factory=dict)
+    trade_id: Optional[str] = None
+
+    def to_dict(self) -> Dict[str, Any]
+
+def price_trade(trade: TradeLike, market_state: MarketState) -> PricerOutput
+def risk_trade(
+    trade: TradeLike,
+    market_state: MarketState,
+    method: str = "bump"
+) -> Dict[str, Any]
+\end{lstlisting}
+
 \section{Risk Module}
 
 \subsection{BumpEngine Class}
@@ -2222,6 +2626,41 @@ class RiskCalculator:
     ) -> InstrumentRisk
 \end{lstlisting}
 
+\subsection{Limit Monitoring}
+
+\begin{lstlisting}
+@dataclass
+class LimitDefinition:
+    name: str
+    metric_key: str
+    category: str
+    warn: float
+    breach: float
+    unit: str = ""
+    aggregation: str = "portfolio"
+    magnitude: str = "abs"
+    comparison: str = "max"
+    hard: bool = True
+    description: str = ""
+
+@dataclass
+class LimitResult:
+    definition: LimitDefinition
+    value: Optional[float]
+    status: str
+
+DEFAULT_LIMITS: List[LimitDefinition]
+
+def evaluate_limits(
+    metrics: Dict[str, float],
+    limits: List[LimitDefinition] = None,
+    status_overrides: Dict[str, str] = None
+) -> List[LimitResult]
+
+def limits_to_table(results: List[LimitResult]) -> List[Dict[str, Any]]
+def compute_limit_metrics(...) -> Dict[str, float]
+\end{lstlisting}
+
 \section{VaR Module}
 
 \subsection{HistoricalSimulation Class}
@@ -2286,6 +2725,105 @@ class ScenarioEngine:
     ) -> List[ScenarioResult]
 \end{lstlisting}
 
+\subsection{StressedVaR Class}
+
+\begin{lstlisting}
+class StressedVaR:
+    STRESS_PERIODS = {
+        "COVID_2020": ...,
+        "RATE_HIKE_2022": ...,
+        "TAPER_2013": ...,
+        "GFC_2008": ...,
+        "FULL_2020_2022": ...,
+    }
+
+    def __init__(
+        self,
+        base_curve: Curve,
+        historical_data: pd.DataFrame,
+        pricer_func: Callable[[Curve], float],
+        stress_period_start: date,
+        stress_period_end: date
+    )
+
+    def compute_stressed_var(self) -> StressResult
+
+    @classmethod
+    def from_predefined_period(
+        cls,
+        base_curve: Curve,
+        historical_data: pd.DataFrame,
+        pricer_func: Callable[[Curve], float],
+        period_name: str
+    ) -> "StressedVaR"
+
+@dataclass
+class StressResult:
+    stressed_var_95: float
+    stressed_var_99: float
+    stressed_es_95: float
+    stressed_es_99: float
+    regular_var_95: float
+    regular_var_99: float
+    stress_period_start: date
+    stress_period_end: date
+    num_stress_scenarios: int
+\end{lstlisting}
+
+\subsection{VaR Backtesting}
+
+\begin{lstlisting}
+@dataclass
+class VaRBacktestResult:
+    confidence: float
+    observations: int
+    exceptions_count: int
+    expected_exceptions: float
+    exception_rate: float
+    kupiec_lr: float
+    kupiec_p_value: float
+    traffic_light: str
+    christoffersen_lr: Optional[float] = None
+    christoffersen_p_value: Optional[float] = None
+
+    @property
+    def passed_kupiec_95(self) -> bool
+    def to_dict(self) -> Dict[str, object]
+    def exceptions_table(self) -> pd.DataFrame
+
+def backtest_var(
+    pnl: Union[Sequence[float], pd.Series],
+    var_forecasts: Union[Sequence[float], pd.Series],
+    confidence: float = 0.99,
+    pnl_is_loss: bool = False
+) -> VaRBacktestResult
+
+def kupiec_pof_test(
+    exceptions_count: int,
+    observations: int,
+    tail_probability: float
+) -> Tuple[float, float]
+
+def christoffersen_independence_test(
+    exceptions: Union[Sequence[bool], pd.Series]
+) -> Tuple[Optional[float], Optional[float], Dict[str, int]]
+
+def traffic_light(
+    observations: int,
+    exceptions_count: int,
+    tail_probability: float
+) -> str
+
+def rolling_historical_var_backtest(
+    base_curve: Curve,
+    historical_data: pd.DataFrame,
+    pricer_func: Callable[[Curve], float],
+    confidence: float = 0.99,
+    lookback_days: int = 250,
+    tenors: Optional[List[str]] = None
+) -> VaRBacktestResult
+\end{lstlisting}
+
 \section{Portfolio Module}
 
 \subsection{Trade Builders}
@@ -2306,9 +2844,17 @@ def build_caplet_trade(pos: pd.Series, valuation_date: date) -> Dict[str, Any]:
 def build_trade_from_position(
     pos: pd.Series,
     valuation_date: date,
-    allow_legacy_options: bool = False
-) -> Dict[str, Any]:
+    allow_legacy_options: bool = False,
+    typed: bool = False
+) -> Any:
     """Dispatch to the correct builder based on instrument_type."""
+
+def build_typed_trade_from_position(
+    pos: pd.Series,
+    valuation_date: date,
+    allow_legacy_options: bool = False
+) -> TypedTrade:
+    """Dispatch and return a typed trade object."""
 \end{lstlisting}
 
 \subsection{Portfolio Pricing}
@@ -2366,7 +2912,15 @@ class InvalidOptionError(PositionValidationError):
 class MarketState:
     curve: CurveState
     sabr_surface: Optional[SabrSurfaceState] = None
-    asof: Any = field(default_factory=datetime.utcnow)
+    asof: Any = field(default_factory=lambda: datetime.now(UTC))
+    pricing_policy: PricingPolicy = field(default_factory=PricingPolicy)
+
+    def resolve_sabr_lookup(
+        self,
+        expiry: str,
+        tenor: str,
+        allow_fallback: bool = True
+    ) -> Optional[SabrLookupResult]: ...
     
     def get_sabr_params(
         self,
@@ -2374,6 +2928,14 @@ class MarketState:
         tenor: str,
         allow_fallback: bool = True
     ) -> Optional[SabrBucketParams]: ...
+
+    def copy(
+        self,
+        curve: Optional[CurveState] = None,
+        sabr_surface: Optional[SabrSurfaceState] = None,
+        asof: Any = None,
+        pricing_policy: Optional[PricingPolicy] = None
+    ) -> "MarketState": ...
 \end{lstlisting}
 
 \subsection{CurveState Class}
@@ -2384,10 +2946,17 @@ class CurveState:
     discount_curve: Curve
     projection_curve: Optional[Curve] = None
     metadata: Dict[str, Any] = field(default_factory=dict)
-    
+
     def __post_init__(self):
         if self.projection_curve is None:
             self.projection_curve = self.discount_curve
+
+    def forward_rate(self, t_start: float, t_end: float) -> float
+    def copy(
+        self,
+        discount_curve: Optional[Curve] = None,
+        projection_curve: Optional[Curve] = None
+    ) -> "CurveState"
 \end{lstlisting}
 
 \section{Volatility Module}
@@ -2504,11 +3073,10 @@ class SabrSurfaceState:
     
     Attributes:
         params_by_bucket: Dict mapping (expiry, tenor) to SabrBucketParams
-        missing_bucket_policy: "nearest" or "wildcard"
-        diagnostics: Calibration diagnostics per bucket
+        convention: Metadata such as vol_type, beta policy, shift policy
+        missing_bucket_policy: fallback behavior; "nearest" is the supported search policy
     """
     params_by_bucket: Dict[BucketKey, SabrBucketParams]
-    diagnostics: Dict[str, Any] = field(default_factory=dict)
     convention: Dict[str, Any] = field(default_factory=dict)
     asof: Optional[str] = None
     missing_bucket_policy: str = "nearest"
@@ -2529,9 +3097,29 @@ class SabrSurfaceState:
         The wildcard bucket is skipped during nearest-neighbor
         distance calculations to avoid tenor parsing errors.
         """
+
+    def resolve_bucket(
+        self,
+        expiry: str,
+        tenor: str,
+        allow_fallback: bool = True
+    ) -> Optional[SabrLookupResult]:
+        """Return exact/fallback SABR lookup details without mutating diagnostics."""
     
     def diagnostics_table(self) -> Dict[BucketKey, Dict[str, Any]]:
         """Return diagnostics keyed by bucket for reporting."""
+\end{lstlisting}
+
+\subsection{SabrLookupResult Dataclass}
+
+\begin{lstlisting}
+@dataclass(frozen=True)
+class SabrLookupResult:
+    requested_bucket: BucketKey
+    used_bucket: Optional[BucketKey]
+    params: Optional[SabrBucketParams]
+    used_fallback: bool = False
+    reason: str = ""
 \end{lstlisting}
 
 \subsection{SabrBucketParams Dataclass}
@@ -2603,7 +3191,8 @@ class SabrCalibrator:
         params: SabrParams,
         quotes_df: pd.DataFrame,
         F: float,
-        T: float
+        T: float,
+        vol_type: str = "NORMAL"
     ) -> float:
         """Compute calibration error (sum of squared vol differences)."""
 
@@ -2619,6 +3208,33 @@ class CalibrationResult:
 \end{lstlisting}
 
 \section{Options Module}
+
+\subsection{Base Model Functions}
+
+\begin{lstlisting}
+def bachelier_call(F: float, K: float, T: float, sigma: float, annuity: float = 1.0) -> float
+def bachelier_put(F: float, K: float, T: float, sigma: float, annuity: float = 1.0) -> float
+def black76_call(F: float, K: float, T: float, sigma: float, annuity: float = 1.0) -> float
+def black76_put(F: float, K: float, T: float, sigma: float, annuity: float = 1.0) -> float
+def shifted_black_call(
+    F: float,
+    K: float,
+    T: float,
+    sigma: float,
+    shift: float,
+    annuity: float = 1.0
+) -> float
+def shifted_black_put(
+    F: float,
+    K: float,
+    T: float,
+    sigma: float,
+    shift: float,
+    annuity: float = 1.0
+) -> float
+def bachelier_greeks(...) -> Dict[str, float]
+def black76_greeks(...) -> Dict[str, float]
+\end{lstlisting}
 
 \subsection{CapletPricer Class}
 
@@ -2694,14 +3310,15 @@ class CapletPricer:
     
     def price_with_sabr(
         self,
-        expiry: date,
-        tenor: str,
+        start_date: date,
+        end_date: date,
         K: float,
         sabr_params: SabrParams,
         vol_type: str = "NORMAL",
-        notional: float = 1.0
-    ) -> float:
-        """Price caplet using SABR implied vol."""
+        notional: float = 1.0,
+        is_cap: bool = True
+    ) -> CapletResult:
+        """Price caplet/floorlet using SABR implied vol."""
 \end{lstlisting}
 
 \subsection{SwaptionPricer Class}
@@ -2769,6 +3386,29 @@ class SwaptionPricer:
         Returns:
             Swaption price
         """
+
+    def greeks(
+        self,
+        S: float,
+        K: float,
+        T: float,
+        annuity: float,
+        vol: float,
+        vol_type: str = "NORMAL",
+        payer_receiver: str = "PAYER",
+        notional: float = 1.0
+    ) -> Dict[str, float]
+
+    def price_with_sabr(
+        self,
+        expiry_tenor: str,
+        swap_tenor: str,
+        K: float,
+        sabr_params: SabrParams,
+        vol_type: str = "NORMAL",
+        payer_receiver: str = "PAYER",
+        notional: float = 1.0
+    ) -> SwaptionResult
 \end{lstlisting}
 
 \subsection{SabrOptionRisk Class}
@@ -2865,8 +3505,67 @@ class RiskReport:
 \end{lstlisting}
 
 %===============================================================================
-% APPENDICES
+% P&L, LIQUIDITY, AND RISK REPORTING
 %===============================================================================
+\section{Liquidity Module}
+
+\begin{lstlisting}
+@dataclass
+class LiquidityParameters:
+    bid_ask_spreads: Dict[str, float] = field(default_factory=dict)
+    holding_period: int = 1
+    position_sizes: Dict[str, float] = field(default_factory=dict)
+    adv: Dict[str, float] = field(default_factory=dict)
+    stress_multiplier: float = 2.0
+
+@dataclass
+class LiquidityAdjustedVaR:
+    base_var: float
+    liquidity_cost: float
+    lvar: float
+    components: Dict[str, float] = field(default_factory=dict)
+
+    @property
+    def liquidity_ratio(self) -> float
+    def to_dict(self) -> Dict
+
+class LiquidityEngine:
+    def __init__(self, params: Optional[LiquidityParameters] = None)
+    def compute_bid_ask_cost(
+        self,
+        dv01_by_instrument: Dict[str, float],
+        is_stressed: bool = False
+    ) -> float
+    def compute_holding_period_scaling(
+        self,
+        base_var: float,
+        holding_period: Optional[int] = None
+    ) -> float
+    def compute_position_impact(
+        self,
+        dv01_by_instrument: Dict[str, float]
+    ) -> float
+    def compute_lvar(
+        self,
+        base_var: float,
+        dv01_by_instrument: Dict[str, float],
+        holding_period: Optional[int] = None,
+        is_stressed: bool = False
+    ) -> LiquidityAdjustedVaR
+
+def estimate_liquidation_time(
+    position_notional: float,
+    adv: float,
+    max_participation_rate: float = 0.25
+) -> int
+
+def scale_var_to_horizon(
+    one_day_var: float,
+    target_horizon: int,
+    decay_factor: float = 0.94
+) -> float
+\end{lstlisting}
+
 \section{P\&L Attribution Module}
 
 \subsection{Options Greeks Attribution}
@@ -2949,6 +3648,40 @@ def attribute_curve_vs_vol(
 \end{lstlisting}
 
 \section{Risk Reporting Module}
+
+\subsection{Report Formatting and CSV Export}
+
+\begin{lstlisting}
+@dataclass
+class RiskReport:
+    report_date: date
+    portfolio_name: str
+    sections: List[ReportSection] = field(default_factory=list)
+    metadata: Dict[str, Any] = field(default_factory=dict)
+
+    def add_section(
+        self,
+        title: str,
+        data: Union[pd.DataFrame, Dict[str, Any]],
+        notes: Optional[str] = None
+    )
+    def to_dict(self) -> Dict
+
+class ReportFormatter:
+    def __init__(
+        self,
+        width: int = 80,
+        precision: int = 2,
+        thousands_sep: bool = True
+    )
+    def format_report(self, report: RiskReport) -> str
+
+def export_to_csv(
+    report: RiskReport,
+    output_dir: Union[str, Path],
+    prefix: Optional[str] = None
+) -> List[str]
+\end{lstlisting}
 
 \subsection{Coverage Metrics}
 
