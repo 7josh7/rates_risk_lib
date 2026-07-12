@@ -49,3 +49,7 @@ tests/__pycache__/
 .pytest_cache/
 .coverage
 htmlcov/
+
+# Local review artifacts
+HIRING_MANAGER_REVIEW.md
+MODEL_VALIDATION.md
