@@ -29,7 +29,7 @@ from shinywidgets import output_widget, render_widget
 import plotly.graph_objects as go
 import plotly.express as px
 
-# Add src to path for importing rateslib
+# Add src to path for importing rates_risk
 sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
 
 

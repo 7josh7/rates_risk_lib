@@ -14,7 +14,7 @@ lib/
 lib64/
 parts/
 sdist/
-var/
+/var/
 wheels/
 *.egg-info/
 .installed.cfg
@@ -35,10 +35,11 @@ env/
 .DS_Store
 Thumbs.db
 
-# Output files (keep structure but ignore generated files)
-output/*.csv
-output/*.txt
-output/*.pdf
+# Generated reports and smoke-test workspaces
+output/
+output_*/
+rates_risk_smoke_*/
+*_smoke_*/
 
 # Dashboard cache
 dashboard/__pycache__/

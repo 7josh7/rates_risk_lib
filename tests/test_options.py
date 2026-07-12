@@ -6,7 +6,7 @@ import pytest
 import numpy as np
 from datetime import date
 
-from rateslib.options.base_models import (
+from rates_risk.options.base_models import (
     bachelier_call,
     bachelier_put,
     black76_call,
@@ -232,7 +232,7 @@ class TestCapletPricer:
     @pytest.fixture
     def discount_curve(self):
         """Create a simple discount curve."""
-        from rateslib.curves import Curve
+        from rates_risk.curves import Curve
         from datetime import date
         
         curve = Curve(anchor_date=date(2024, 1, 15))
@@ -248,7 +248,7 @@ class TestCapletPricer:
     
     def test_caplet_price(self, discount_curve):
         """Test basic caplet pricing."""
-        from rateslib.options.caplet import CapletPricer
+        from rates_risk.options.caplet import CapletPricer
         
         pricer = CapletPricer(
             discount_curve=discount_curve,
@@ -278,7 +278,7 @@ class TestCapletPricer:
     
     def test_caplet_greeks(self, discount_curve):
         """Test caplet Greek calculations."""
-        from rateslib.options.caplet import CapletPricer
+        from rates_risk.options.caplet import CapletPricer
         
         pricer = CapletPricer(
             discount_curve=discount_curve,
@@ -314,7 +314,7 @@ class TestSwaptionPricer:
     @pytest.fixture
     def discount_curve(self):
         """Create a simple discount curve."""
-        from rateslib.curves import Curve
+        from rates_risk.curves import Curve
         from datetime import date
         
         curve = Curve(anchor_date=date(2024, 1, 15))
@@ -330,7 +330,7 @@ class TestSwaptionPricer:
     
     def test_forward_swap_rate(self, discount_curve):
         """Test forward swap rate calculation."""
-        from rateslib.options.swaption import SwaptionPricer
+        from rates_risk.options.swaption import SwaptionPricer
         
         pricer = SwaptionPricer(
             discount_curve=discount_curve,
@@ -348,7 +348,7 @@ class TestSwaptionPricer:
     
     def test_swaption_price(self, discount_curve):
         """Test basic swaption pricing."""
-        from rateslib.options.swaption import SwaptionPricer
+        from rates_risk.options.swaption import SwaptionPricer
         
         pricer = SwaptionPricer(
             discount_curve=discount_curve,
@@ -376,7 +376,7 @@ class TestSabrOptionRisk:
     
     @pytest.fixture
     def sabr_params(self):
-        from rateslib.vol.sabr import SabrParams
+        from rates_risk.vol.sabr import SabrParams
         return SabrParams(
             sigma_atm=0.20,  # 20% Black vol
             beta=0.5,
@@ -386,7 +386,7 @@ class TestSabrOptionRisk:
     
     def test_risk_report(self, sabr_params):
         """Test risk report generation."""
-        from rateslib.options.sabr_risk import SabrOptionRisk
+        from rates_risk.options.sabr_risk import SabrOptionRisk
         
         engine = SabrOptionRisk(vol_type="NORMAL")
         
@@ -410,7 +410,7 @@ class TestSabrOptionRisk:
     
     def test_delta_decomposition(self, sabr_params):
         """Test delta decomposition into sideways and backbone."""
-        from rateslib.options.sabr_risk import SabrOptionRisk
+        from rates_risk.options.sabr_risk import SabrOptionRisk
         
         engine = SabrOptionRisk(vol_type="NORMAL")
         
@@ -436,7 +436,7 @@ class TestSabrOptionRisk:
     
     def test_model_consistent_delta_differs(self, sabr_params):
         """Test that model-consistent delta differs from base delta."""
-        from rateslib.options.sabr_risk import SabrOptionRisk
+        from rates_risk.options.sabr_risk import SabrOptionRisk
         
         engine = SabrOptionRisk(vol_type="NORMAL")
         

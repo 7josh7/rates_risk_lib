@@ -25,9 +25,9 @@ import pandas as pd
 # Add src to path for development
 sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
 
-from rateslib.conventions import DayCount, Conventions
-from rateslib.dates import DateUtils
-from rateslib.curves import (
+from rates_risk.conventions import DayCount, Conventions
+from rates_risk.dates import DateUtils
+from rates_risk.curves import (
     Curve,
     CubicSplineInterpolator,
     OISBootstrapper,
@@ -35,18 +35,18 @@ from rateslib.curves import (
     OISSwap,
     bootstrap_from_quotes,
 )
-from rateslib.pricers import BondPricer, SwapPricer, FuturesPricer, FuturesContract, price_trade
-from rateslib.risk import RiskCalculator, BumpEngine, KeyRateEngine, PortfolioRisk
-from rateslib.var import HistoricalSimulation, MonteCarloVaR, ScenarioEngine, STANDARD_SCENARIOS
-from rateslib.pnl import PnLAttributionEngine
-from rateslib.reporting import (
+from rates_risk.pricers import BondPricer, SwapPricer, FuturesPricer, FuturesContract, price_trade
+from rates_risk.risk import RiskCalculator, BumpEngine, KeyRateEngine, PortfolioRisk
+from rates_risk.var import HistoricalSimulation, MonteCarloVaR, ScenarioEngine, STANDARD_SCENARIOS
+from rates_risk.pnl import PnLAttributionEngine
+from rates_risk.reporting import (
     RiskReport,
     ReportFormatter,
     generate_risk_summary,
     generate_position_report,
     export_to_csv,
 )
-from rateslib import (
+from rates_risk import (
     CurveState,
     MarketState,
     normalize_vol_quotes,
@@ -288,7 +288,7 @@ def price_portfolio(
 
         elif inst_type == 'SWAPTION':
             # Price European swaption using SABR surface if available
-            from rateslib.options.swaption import SwaptionPricer
+            from rates_risk.options.swaption import SwaptionPricer
 
             expiry_tenor = pos.get('expiry_tenor', '1Y')
             swap_tenor = pos.get('swap_tenor', '5Y')

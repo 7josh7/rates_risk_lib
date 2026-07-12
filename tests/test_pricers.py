@@ -6,10 +6,10 @@ from datetime import date, timedelta
 import numpy as np
 import pytest
 
-from rateslib.curves import Curve, create_flat_curve
-from rateslib.market_state import CurveState, MarketState
-from rateslib.pricers import BondPricer, SwapPricer, FuturesPricer, FuturesContract, risk_trade
-from rateslib.vol.sabr_surface import SabrSurfaceState, SabrBucketParams
+from rates_risk.curves import Curve, create_flat_curve
+from rates_risk.market_state import CurveState, MarketState
+from rates_risk.pricers import BondPricer, SwapPricer, FuturesPricer, FuturesContract, risk_trade
+from rates_risk.vol.sabr_surface import SabrSurfaceState, SabrBucketParams
 
 
 @pytest.fixture

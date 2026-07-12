@@ -29,10 +29,10 @@ import plotly.graph_objects as go
 import plotly.express as px
 from plotly.subplots import make_subplots
 
-# Add src to path for importing rateslib
+# Add src to path for importing rates_risk
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 
-from rateslib import (
+from rates_risk import (
     # Curves
     Curve, OISBootstrapper, NelsonSiegelSvensson,
     # Pricers
@@ -54,15 +54,15 @@ from rateslib import (
     DayCount, Conventions,
     DateUtils,
 )
-from rateslib.curves.bootstrap import bootstrap_from_quotes
+from rates_risk.curves.bootstrap import bootstrap_from_quotes
 # New engine-layer imports for real risk computation
-from rateslib.risk.reporting import (
+from rates_risk.risk.reporting import (
     compute_curve_risk_metrics,
     CurveRiskMetrics,
     build_var_portfolio_pricer,
     VaRCoverageInfo,
 )
-from rateslib.var.scenarios import (
+from rates_risk.var.scenarios import (
     run_scenario_set,
     scenarios_to_dataframe,
     PortfolioScenarioResult,
@@ -75,9 +75,9 @@ from rateslib.var.scenarios import (
     SabrShock,
 )
 # SABR risk engine for options Greeks
-from rateslib.options.sabr_risk import SabrOptionRisk, RiskReport, compute_portfolio_risk
+from rates_risk.options.sabr_risk import SabrOptionRisk, RiskReport, compute_portfolio_risk
 # P&L attribution with curve vs vol decomposition
-from rateslib.pnl.attribution import (
+from rates_risk.pnl.attribution import (
     attribute_curve_vs_vol,
     compute_option_pnl_attribution,
     aggregate_options_attribution,
@@ -837,7 +837,7 @@ def main():
             The smile shows how implied volatility varies with strike around ATM.
             """)
             
-            from rateslib.vol.sabr import SabrModel, SabrParams
+            from rates_risk.vol.sabr import SabrModel, SabrParams
             sabr_model = SabrModel()
             
             # Get all buckets
@@ -983,7 +983,7 @@ def main():
                 day_count_str = st.selectbox("Day Count Convention", ["ACT/360", "ACT/365", "ACT/ACT", "30/360"], index=0)
             
             if st.button("Price Bond"):
-                from rateslib.conventions import DayCount, Conventions
+                from rates_risk.conventions import DayCount, Conventions
                 day_count_enum = DayCount.from_string(day_count_str)
                 bond_conventions = Conventions(day_count=day_count_enum)
                 pricer = BondPricer(treasury_curve, conventions=bond_conventions)
@@ -1407,7 +1407,7 @@ def main():
                     "is_linear_only": var_coverage.is_linear_only,
                 }
         elif var_method == "Monte Carlo":
-            from rateslib.var.monte_carlo import MonteCarloVaR
+            from rates_risk.var.monte_carlo import MonteCarloVaR
 
             mc_engine = MonteCarloVaR(
                 base_curve=ois_curve,
@@ -1437,7 +1437,7 @@ def main():
                     "is_linear_only": var_coverage.is_linear_only,
                 }
         elif var_method == "Stressed VaR":
-            from rateslib.var.stress import StressedVaR
+            from rates_risk.var.stress import StressedVaR
 
             sv_engine = StressedVaR.from_predefined_period(
                 base_curve=ois_curve,
@@ -1468,7 +1468,7 @@ def main():
 
         # Liquidity uplift if we have a base var
         if var_results_payload.get("var_99"):
-            from rateslib.liquidity import LiquidityEngine
+            from rates_risk.liquidity import LiquidityEngine
 
             liq_engine = LiquidityEngine()
             lvar = liq_engine.compute_lvar(var_results_payload["var_99"], dv01_by_instrument={})
@@ -1927,7 +1927,7 @@ def main():
             st.markdown("**Yield Curve Comparison**")
             
             # Compute stressed curve
-            from rateslib.curves.nss import NSSParameters
+            from rates_risk.curves.nss import NSSParameters
             stressed_params = NSSParameters(
                 beta0=nss_beta0, beta1=nss_beta1, beta2=nss_beta2,
                 beta3=nss_beta3, lambda1=nss_lambda1, lambda2=nss_lambda2
@@ -2034,7 +2034,7 @@ def main():
                 
                 if bucket_params:
                     # Generate implied vol smile
-                    from rateslib.vol.sabr import SabrModel, SabrParams
+                    from rates_risk.vol.sabr import SabrModel, SabrParams
                     sabr_model = SabrModel()
                     
                     # Assume forward ~4% for visualization
@@ -2157,7 +2157,7 @@ def main():
                     # =========================================================
                     # 1. Build stressed NSS curve
                     # =========================================================
-                    from rateslib.curves.nss import NSSParameters
+                    from rates_risk.curves.nss import NSSParameters
                     
                     stressed_nss_params = NSSParameters(
                         beta0=nss_beta0, beta1=nss_beta1, beta2=nss_beta2,
@@ -2210,7 +2210,7 @@ def main():
                             bump_profile[tenor] = bump
                     
                     # Apply bumps to the stressed NSS curve
-                    from rateslib.risk.bumping import BumpEngine
+                    from rates_risk.risk.bumping import BumpEngine
                     if bump_profile:
                         bump_engine = BumpEngine(stressed_nss_curve)
                         final_stressed_curve = bump_engine.custom_bump(bump_profile)
@@ -2226,7 +2226,7 @@ def main():
                         sabr_nu_scale_val = st.session_state.get("sabr_nu", 1.0)
                         sabr_rho_shift_val = st.session_state.get("sabr_rho", 0.0)
                         
-                        from rateslib.vol.sabr_surface import SabrSurfaceState, SabrBucketParams
+                        from rates_risk.vol.sabr_surface import SabrSurfaceState, SabrBucketParams
                         
                         stressed_params_by_bucket = {}
                         for bucket, params in market_state.sabr_surface.params_by_bucket.items():
@@ -2264,7 +2264,7 @@ def main():
                     # =========================================================
                     # 5. Price portfolio under base and stressed states
                     # =========================================================
-                    from rateslib.portfolio.builders import price_portfolio_with_diagnostics
+                    from rates_risk.portfolio.builders import price_portfolio_with_diagnostics
                     
                     # Base pricing
                     base_result = price_portfolio_with_diagnostics(
@@ -2359,7 +2359,7 @@ def main():
         
         # Create synthetic P&L attribution - linear products
         st.subheader("Linear Products Attribution")
-        from rateslib.pnl.attribution import PnLComponents
+        from rates_risk.pnl.attribution import PnLComponents
         
         pnl_comp_linear = PnLComponents(
             carry=500,

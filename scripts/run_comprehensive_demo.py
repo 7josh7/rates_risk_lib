@@ -26,7 +26,7 @@ import pandas as pd
 # Add src to path for direct script execution.
 sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
 
-from rateslib import (
+from rates_risk import (
     DEFAULT_LIMITS,
     CurveState,
     HistoricalSimulation,
@@ -40,9 +40,9 @@ from rateslib import (
     price_portfolio_with_diagnostics,
     price_trade,
 )
-from rateslib.curves import bootstrap_from_quotes
-from rateslib.dates import DateUtils
-from rateslib.risk import compute_curve_risk_metrics
+from rates_risk.curves import bootstrap_from_quotes
+from rates_risk.dates import DateUtils
+from rates_risk.risk import compute_curve_risk_metrics
 
 
 def print_section(title: str, char: str = "=") -> None:

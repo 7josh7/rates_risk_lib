@@ -6,17 +6,17 @@ import pytest
 import numpy as np
 import pandas as pd
 from datetime import date
-from rateslib.vol.sabr import (
+from rates_risk.vol.sabr import (
     SabrParams,
     SabrModel,
     hagan_black_vol,
     hagan_normal_vol,
     _hagan_atm_vol,
 )
-from rateslib.vol.sabr_surface import SabrSurfaceState, SabrBucketParams
-from rateslib.vol.quotes import normalize_vol_quotes
-from rateslib.curves import create_flat_curve
-from rateslib import CurveState
+from rates_risk.vol.sabr_surface import SabrSurfaceState, SabrBucketParams
+from rates_risk.vol.quotes import normalize_vol_quotes
+from rates_risk.curves import create_flat_curve
+from rates_risk import CurveState
 
 
 class TestSabrParams:
@@ -45,6 +45,13 @@ class TestSabrParams:
         assert params.rho == -0.2
         assert params.nu == 0.4
         assert params.shift == 0.02
+
+    @pytest.mark.parametrize("field", ["sigma_atm", "beta", "rho", "nu", "shift"])
+    def test_non_finite_parameters_are_rejected(self, field):
+        values = {"sigma_atm": 0.005, "beta": 0.5, "rho": 0.0, "nu": 0.3, "shift": 0.0}
+        values[field] = np.nan
+        with pytest.raises(ValueError, match="finite"):
+            SabrParams(**values)
 
 
 class TestHaganFormulas:
@@ -235,7 +242,7 @@ class TestSabrCalibration:
     
     def test_basic_calibration(self):
         """Test calibration to synthetic market data."""
-        from rateslib.vol.calibration import SabrCalibrator
+        from rates_risk.vol.calibration import SabrCalibrator
         import pandas as pd
         
         # Generate synthetic market data from known SABR params
@@ -262,7 +269,7 @@ class TestSabrCalibration:
     
     def test_calibration_with_noise(self):
         """Test calibration robustness to noisy data."""
-        from rateslib.vol.calibration import SabrCalibrator
+        from rates_risk.vol.calibration import SabrCalibrator
         import pandas as pd
         
         true_params = SabrParams(sigma_atm=0.20, beta=0.5, rho=-0.15, nu=0.35)
@@ -285,6 +292,38 @@ class TestSabrCalibration:
         # Should still calibrate reasonably well
         assert result.fit_error < 0.1
 
+    @pytest.mark.parametrize(
+        "quotes",
+        [
+            pd.DataFrame(columns=["strike", "vol"]),
+            pd.DataFrame({"strike": [0.04], "vol": [np.nan]}),
+            pd.DataFrame({"strike": [np.inf], "vol": [0.20]}),
+            pd.DataFrame({"strike": [0.04], "vol": [0.0]}),
+        ],
+    )
+    def test_calibration_rejects_empty_or_non_finite_quotes(self, quotes):
+        from rates_risk.vol.calibration import SabrCalibrator
+
+        with pytest.raises(ValueError):
+            SabrCalibrator(beta=0.5).fit(quotes, F=0.04, T=1.0, vol_type="LOGNORMAL")
+
+    def test_calibration_reports_optimizer_diagnostics(self):
+        from rates_risk.vol.calibration import SabrCalibrator
+
+        quotes = pd.DataFrame(
+            {"strike": [0.03, 0.04, 0.05], "vol": [0.24, 0.20, 0.22]}
+        )
+        result = SabrCalibrator(beta=0.5).fit(
+            quotes,
+            F=0.04,
+            T=1.0,
+            vol_type="LOGNORMAL",
+        )
+
+        assert result.optimizer_success
+        assert result.optimizer_method in {"L-BFGS-B", "differential_evolution"}
+        assert result.iterations >= 0
+
 
 class TestVolQuotes:
     """Tests for vol quote handling."""
@@ -296,7 +335,7 @@ class TestVolQuotes:
     
     def test_vol_quote_creation(self):
         """Test VolQuote dataclass."""
-        from rateslib.vol.quotes import VolQuote
+        from rates_risk.vol.quotes import VolQuote
         from datetime import date
         
         quote = VolQuote(
@@ -314,7 +353,7 @@ class TestVolQuotes:
     
     def test_strike_value(self):
         """Test strike value calculation."""
-        from rateslib.vol.quotes import VolQuote
+        from rates_risk.vol.quotes import VolQuote
         
         F = 0.04
         

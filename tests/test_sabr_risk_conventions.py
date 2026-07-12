@@ -10,8 +10,8 @@ These tests validate:
 
 import pytest
 import numpy as np
-from rateslib.vol.sabr import SabrParams, SabrModel
-from rateslib.options.sabr_risk import SabrOptionRisk
+from rates_risk.vol.sabr import SabrParams, SabrModel
+from rates_risk.options.sabr_risk import SabrOptionRisk
 
 
 class TestVolTypeAPIConsistency:
@@ -146,7 +146,7 @@ class TestDeltaConvention:
         
         This validates that the model-consistent delta matches bump-and-reprice.
         """
-        from rateslib.options.base_models import bachelier_call
+        from rates_risk.options.base_models import bachelier_call
         
         engine = SabrOptionRisk(vol_type="NORMAL")
         model = SabrModel()
@@ -277,7 +277,7 @@ class TestSigmaATMVega:
         """
         Test that dV/d(sigma_atm) matches bump-and-reprice on PV.
         """
-        from rateslib.options.base_models import bachelier_call
+        from rates_risk.options.base_models import bachelier_call
         
         engine = SabrOptionRisk(vol_type="NORMAL")
         model = SabrModel()

@@ -2,60 +2,78 @@
 
 All notable changes to the Rates Risk Library are documented in this file.
 
+## [Unreleased] - 2026-07-12
+
+### Changed
+
+- Renamed the distribution to `rates-risk-lib` and import namespace to
+  `rates_risk` to avoid collision with the unrelated PyPI project `rateslib`.
+- Curve ingestion now fails closed on non-finite, missing, duplicate, and
+  unsupported quote rows; arbitrary discount-factor clipping was removed.
+- Curves now support positive discount factors above one for negative-rate
+  regimes and validate all interpolated numerical outputs.
+- Replaced multiple promotional assessment files with one conservative
+  [`MODEL_VALIDATION.md`](MODEL_VALIDATION.md) status record.
+- Added CI, package-build checks, optional dependency groups, and MIT license.
+
+### Removed
+
+- Tracked Python bytecode and generated smoke-test output directories.
+
 ## [Current Version] - December 2024
 
 ### Major Features Added
 
 #### SABR Volatility Model Integration
-- **SABR Model** (`src/rateslib/vol/sabr.py`)
+- **SABR Model** (`src/rates_risk/vol/sabr.py`)
   - Full implementation of Hagan's SABR formulas
   - Support for both Normal (basis point) and Lognormal (Black) volatility conventions
   - Shifted SABR for negative rates
   - Parameter sensitivities (d\u03c3/dF, d\u03c3/d\u03c1, d\u03c3/d\u03bd)
 
-- **Volatility Surface Management** (`src/rateslib/vol/sabr_surface.py`)
+- **Volatility Surface Management** (`src/rates_risk/vol/sabr_surface.py`)
   - Multi-dimensional surface by expiry and tenor buckets
   - Flexible bucketing strategies (nearest neighbor, interpolation)
   - ATM vol lookup and smile generation
 
-- **SABR Calibration** (`src/rateslib/vol/calibration.py`)
+- **SABR Calibration** (`src/rates_risk/vol/calibration.py`)
   - Market calibration from vol quotes
   - Constraint handling (correlation bounds, vol positivity)
   - Robust optimization
 
-- **Volatility Quotes** (`src/rateslib/vol/quotes.py`)
+- **Volatility Quotes** (`src/rates_risk/vol/quotes.py`)
   - Support for ATM, RR (risk reversal), BF (butterfly) quote formats
   - Strike conversion utilities
   - Market data loading from CSV
 
 #### Options Pricing
-- **Swaptions** (`src/rateslib/options/swaption.py`)
+- **Swaptions** (`src/rates_risk/options/swaption.py`)
   - European swaption pricing with SABR
   - Analytical Greeks (delta, vega)
   - Payer/Receiver convention support
   - Integration with market state
 
-- **Caplets/Floors** (`src/rateslib/options/caplet.py`)
+- **Caplets/Floors** (`src/rates_risk/options/caplet.py`)
   - Interest rate cap and floor pricing
   - SABR-based implied volatility
   - Greeks calculations
   - Multi-period caplets
 
-- **SABR Risk** (`src/rateslib/options/sabr_risk.py`)
+- **SABR Risk** (`src/rates_risk/options/sabr_risk.py`)
   - Parameter sensitivities (\u03c3_ATM, \u03bd, \u03c1)
   - Delta conventions (sticky strike, sticky delta, backbone)
   - Vega calculation with vol bumping
   - Comprehensive risk reporting
 
 #### Futures Support
-- **Enhanced Futures Pricing** (`src/rateslib/pricers/futures.py`)
+- **Enhanced Futures Pricing** (`src/rates_risk/pricers/futures.py`)
   - SOFR futures contract specifications
   - Theoretical pricing vs market price
   - P&L tracking with trade price
   - Convexity adjustment
   - Expiry date validation
 
-- **Futures in Portfolio** (`src/rateslib/var/scenarios.py`)
+- **Futures in Portfolio** (`src/rates_risk/var/scenarios.py`)
   - Full integration in scenario analysis
   - Proper handling of long/short positions
   - Expired contract filtering
@@ -171,7 +189,7 @@ All notable changes to the Rates Risk Library are documented in this file.
 
 ### New Exports
 ```python
-from rateslib import (
+from rates_risk import (
     # SABR/Vol
     SabrModel, SabrParams, SabrSurface, build_sabr_surface,
     VolQuote, normalize_vol_quotes,
@@ -207,7 +225,7 @@ If you were using the library before SABR integration:
 2. **Optional: Use new SABR features**:
    ```python
    # Build vol surface
-   from rateslib import build_sabr_surface, normalize_vol_quotes
+   from rates_risk import build_sabr_surface, normalize_vol_quotes
    import pandas as pd
    
    vol_quotes_df = pd.read_csv('data/vol_quotes.csv')
@@ -215,7 +233,7 @@ If you were using the library before SABR integration:
    sabr_surface = build_sabr_surface(vol_quotes, valuation_date)
    
    # Create market state
-   from rateslib import MarketState, CurveState
+   from rates_risk import MarketState, CurveState
    
    market_state = MarketState(
        curve=CurveState(discount_curve=curve, projection_curve=curve),
@@ -224,7 +242,7 @@ If you were using the library before SABR integration:
    )
    
    # Price swaption
-   from rateslib import price_trade
+   from rates_risk import price_trade
    
    swaption_trade = {
        "instrument_type": "SWAPTION",
@@ -245,7 +263,9 @@ If you were using the library before SABR integration:
 
 ## Known Issues & Limitations
 
-None currently identified. All 177 tests passing, 100% position coverage achieved.
+Known limitations and open independent-validation work are maintained in
+[`MODEL_VALIDATION.md`](MODEL_VALIDATION.md). Passing regression tests do not
+constitute production model approval.
 
 ## Future Roadmap
 
@@ -260,7 +280,7 @@ Potential enhancements under consideration:
 
 ## Contributors
 
-This library is actively maintained and developed for production trading desk use.
+This library is maintained as an experimental rates-analytics project.
 
 ---
 

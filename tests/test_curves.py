@@ -6,17 +6,18 @@ from datetime import date, timedelta
 import numpy as np
 import pytest
 
-from rateslib.curves import (
+from rates_risk.curves import (
     Curve,
     LinearInterpolator,
     CubicSplineInterpolator,
     LogLinearInterpolator,
     OISBootstrapper,
+    CurveBootstrapError,
     NelsonSiegelSvensson,
     create_flat_curve,
     bootstrap_from_quotes,
 )
-from rateslib.curves.instruments import Future, _interpolate_df
+from rates_risk.curves.instruments import Deposit, Future, _interpolate_df
 
 
 class TestInterpolators:
@@ -151,6 +152,24 @@ class TestCurve:
         bump_zr = bump_nodes[node_idx][2]
         assert abs((bump_zr - orig_zr) * 10000 - 10) < 1
 
+    def test_log_linear_curve_uses_discount_factors(self):
+        curve = Curve(date(2024, 1, 15), interpolation_method="log_linear")
+        curve.add_node(1.0, np.exp(-0.05))
+        curve.add_node(2.0, np.exp(-0.10))
+        curve.build()
+
+        assert curve.discount_factor(1.5) == pytest.approx(np.exp(-0.075))
+        assert curve.zero_rate(1.5) == pytest.approx(0.05)
+
+    def test_curve_supports_negative_rates(self):
+        curve = Curve(date(2024, 1, 15), interpolation_method="linear")
+        curve.add_node(1.0, np.exp(0.01))
+        curve.add_node(2.0, np.exp(0.02))
+        curve.build()
+
+        assert curve.discount_factor(1.0) > 1.0
+        assert curve.zero_rate(1.0) == pytest.approx(-0.01)
+
 
 class TestOISBootstrap:
     """Tests for OIS bootstrapping."""
@@ -213,6 +232,49 @@ class TestOISBootstrap:
         """Internal DF interpolation should fail fast on invalid discount factors."""
         with pytest.raises(ValueError, match="strictly positive"):
             _interpolate_df(1.5, [(1.0, 1.0), (2.0, 0.0)])
+
+    @pytest.mark.parametrize("bad_quote", [np.nan, np.inf, -np.inf])
+    def test_bootstrap_rejects_non_finite_quotes(self, bad_quote):
+        with pytest.raises(CurveBootstrapError, match="finite"):
+            bootstrap_from_quotes(
+                date(2024, 1, 15),
+                [{"instrument_type": "DEPOSIT", "tenor": "1Y", "quote": bad_quote}],
+            )
+
+    def test_bootstrap_rejects_unknown_instrument_instead_of_dropping_it(self):
+        quotes = [
+            {"instrument_type": "DEPOSIT", "tenor": "1M", "quote": 0.05},
+            {"instrument_type": "SWAP", "tenor": "5Y", "quote": 0.04},
+        ]
+        with pytest.raises(CurveBootstrapError, match="Unsupported instrument_type 'SWAP'"):
+            bootstrap_from_quotes(date(2024, 1, 15), quotes)
+
+    def test_bootstrap_rejects_duplicate_quotes(self):
+        quote = {"instrument_type": "DEPOSIT", "tenor": "1M", "quote": 0.05}
+        with pytest.raises(CurveBootstrapError, match="Duplicate market quote"):
+            bootstrap_from_quotes(date(2024, 1, 15), [quote, dict(quote)])
+
+    def test_bootstrap_accepts_negative_deposit_rate(self):
+        curve = bootstrap_from_quotes(
+            date(2024, 1, 15),
+            [{"instrument_type": "DEPOSIT", "tenor": "1Y", "quote": -0.01}],
+        )
+        assert curve.get_node_dfs()[-1] > 1.0
+        assert curve.zero_rate(1.0) < 0.0
+
+    def test_bootstrap_result_exposes_finite_curve_diagnostics(self):
+        bootstrapper = OISBootstrapper(date(2024, 1, 15))
+        result = bootstrapper.bootstrap(
+            [
+                Deposit(tenor="1M", quote=0.05),
+                Deposit(tenor="3M", quote=0.049),
+            ]
+        )
+
+        assert result.success, result.message
+        assert result.diagnostics["node_count"] == 3
+        assert np.isfinite(result.diagnostics["min_simple_forward"])
+        assert np.isfinite(result.diagnostics["max_simple_forward"])
 
 
 class TestNSS:

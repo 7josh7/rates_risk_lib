@@ -6,8 +6,8 @@ from datetime import date, timedelta
 import numpy as np
 import pytest
 
-from rateslib.curves import Curve, create_flat_curve
-from rateslib.risk import BumpEngine, RiskCalculator, KeyRateEngine
+from rates_risk.curves import Curve, create_flat_curve
+from rates_risk.risk import BumpEngine, RiskCalculator, KeyRateEngine
 
 
 @pytest.fixture

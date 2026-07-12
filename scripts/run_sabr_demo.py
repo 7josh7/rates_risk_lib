@@ -19,7 +19,7 @@ import numpy as np
 # Add src to path
 sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
 
-from rateslib import (
+from rates_risk import (
     # Curves
     Curve,
     OISBootstrapper,
@@ -126,7 +126,8 @@ def demo_sabr_calibration():
     )
     
     print(f"\nCalibration Result:")
-    print(f"  sigma_ATM  = {result.params.sigma_atm*10000:.2f} bps")
+    print(f"  Market ATM normal vol = {result.market_atm_vol*10000:.2f} bps")
+    print(f"  Internal ATM Black-equivalent vol = {result.params.sigma_atm*100:.2f}%")
     print(f"  beta       = {result.params.beta:.2f} (fixed)")
     print(f"  rho        = {result.params.rho:.4f}")
     print(f"  nu         = {result.params.nu:.4f}")
@@ -151,7 +152,7 @@ def demo_option_pricing(sabr_params: SabrParams):
     """Demonstrate option pricing with SABR."""
     print_section("3. Option Pricing with SABR")
     
-    from rateslib.curves import Curve
+    from rates_risk.curves import Curve
     
     # Build a simple discount curve manually
     discount_curve = Curve(anchor_date=date(2024, 1, 15))

@@ -115,7 +115,7 @@
 
 \section{Overview}
 
-The \textbf{Rates Risk Library} (\code{rateslib}) is a comprehensive Python library designed for USD yield curve construction, fixed-income instrument pricing, and risk analytics. It provides a complete toolkit for trading desk workflows including:
+The \textbf{Rates Risk Library} (\code{rates_risk}) is a comprehensive Python library designed for USD yield curve construction, fixed-income instrument pricing, and risk analytics. It provides a complete toolkit for trading desk workflows including:
 
 \begin{itemize}
     \item Real-time risk monitoring with DV01 and key-rate duration
@@ -234,7 +234,7 @@ Used for some swap fixed legs:
 \end{equation}
 
 \begin{lstlisting}
-from rateslib import DayCount, year_fraction
+from rates_risk import DayCount, year_fraction
 from datetime import date
 
 # Calculate year fraction using ACT/360
@@ -280,7 +280,7 @@ Simple & $\df(t) = (1 + r \cdot t)^{-1}$ \\
 \section{Standard USD Conventions}
 
 \begin{lstlisting}
-from rateslib import Conventions
+from rates_risk import Conventions
 
 # USD OIS conventions
 ois_conv = Conventions.usd_ois()
@@ -302,7 +302,7 @@ swap_conv = Conventions.usd_swap()
 The \code{DateUtils} class provides utilities for parsing and manipulating tenors:
 
 \begin{lstlisting}
-from rateslib.dates import DateUtils
+from rates_risk.dates import DateUtils
 from datetime import date
 
 # Parse tenor
@@ -320,7 +320,7 @@ years = DateUtils.tenor_to_years("6M")  # 0.5
 \subsection{Schedule Generation}
 
 \begin{lstlisting}
-from rateslib.dates import generate_bond_schedule, generate_swap_schedule
+from rates_risk.dates import generate_bond_schedule, generate_swap_schedule
 
 # Generate bond payment schedule
 schedule = generate_bond_schedule(
@@ -374,7 +374,7 @@ The instantaneous forward rate is:
 \subsection{Curve Class API}
 
 \begin{lstlisting}
-from rateslib import Curve
+from rates_risk import Curve
 from datetime import date
 
 # Create a curve
@@ -435,7 +435,7 @@ Solving for the unknown discount factor:
 \subsection{API Usage}
 
 \begin{lstlisting}
-from rateslib import OISBootstrapper
+from rates_risk import OISBootstrapper
 from datetime import date
 
 # Initialize bootstrapper
@@ -522,7 +522,7 @@ The library uses L-BFGS-B with bounds, falling back to differential evolution fo
 \subsection{API Usage}
 
 \begin{lstlisting}
-from rateslib import NelsonSiegelSvensson
+from rates_risk import NelsonSiegelSvensson
 from datetime import date
 
 # Initialize NSS model
@@ -593,7 +593,7 @@ where $m$ is the coupon frequency per year.
 \subsection{BondPricer API}
 
 \begin{lstlisting}
-from rateslib import BondPricer, Conventions
+from rates_risk import BondPricer, Conventions
 
 # Create pricer with curve
 pricer = BondPricer(
@@ -667,7 +667,7 @@ The par swap rate is the fixed rate that makes the swap have zero value:
 \subsection{SwapPricer API}
 
 \begin{lstlisting}
-from rateslib import SwapPricer
+from rates_risk import SwapPricer
 
 # Create pricer with discount and projection curves
 pricer = SwapPricer(
@@ -720,7 +720,7 @@ A simple approximation:
 \subsection{FuturesPricer API}
 
 \begin{lstlisting}
-from rateslib import FuturesPricer
+from rates_risk import FuturesPricer
 
 pricer = FuturesPricer(curve=ois_curve)
 
@@ -807,7 +807,7 @@ Key-rate DV01s are essential for:
 \section{BumpEngine API}
 
 \begin{lstlisting}
-from rateslib.risk import BumpEngine
+from rates_risk.risk import BumpEngine
 
 # Create bump engine
 engine = BumpEngine(base_curve=ois_curve)
@@ -829,7 +829,7 @@ convexity = engine.compute_convexity(pricer_func=portfolio_pv, bump_size=1.0)
 \section{KeyRateEngine API}
 
 \begin{lstlisting}
-from rateslib.risk import KeyRateEngine, STANDARD_KEY_RATE_TENORS
+from rates_risk.risk import KeyRateEngine, STANDARD_KEY_RATE_TENORS
 
 # Create key-rate engine
 kr_engine = KeyRateEngine(
@@ -849,7 +849,7 @@ for tenor, dv01 in kr_dv01.dv01s.items():
 \section{RiskCalculator API}
 
 \begin{lstlisting}
-from rateslib.risk import RiskCalculator
+from rates_risk.risk import RiskCalculator
 
 # Create calculator
 calc = RiskCalculator(curve=ois_curve, bump_size=1.0)
@@ -907,7 +907,7 @@ Expected Shortfall (ES), also called CVaR, is the expected loss given that VaR i
 \subsection{API Usage}
 
 \begin{lstlisting}
-from rateslib.var import HistoricalSimulation
+from rates_risk.var import HistoricalSimulation
 import pandas as pd
 
 # Load historical rate data
@@ -960,7 +960,7 @@ To generate correlated samples, use Cholesky decomposition $\Sigma = LL^T$:
 \subsection{API Usage}
 
 \begin{lstlisting}
-from rateslib.var import MonteCarloVaR
+from rates_risk.var import MonteCarloVaR
 
 # Initialize Monte Carlo engine
 mc_var = MonteCarloVaR(
@@ -1006,7 +1006,7 @@ The library includes standard stress scenarios:
 \subsection{API Usage}
 
 \begin{lstlisting}
-from rateslib.var import ScenarioEngine, STANDARD_SCENARIOS
+from rates_risk.var import ScenarioEngine, STANDARD_SCENARIOS
 
 # Create scenario engine
 engine = ScenarioEngine(
@@ -1021,7 +1021,7 @@ for name, scenario in STANDARD_SCENARIOS.items():
     print(f"{scenario.name}: P&L = ${result.pnl:,.2f}")
 
 # Custom scenario
-from rateslib.var import Scenario
+from rates_risk.var import Scenario
 
 custom = Scenario(
     name="Fed Pivot",
@@ -1108,7 +1108,7 @@ Sources of residual:
 \section{API Usage}
 
 \begin{lstlisting}
-from rateslib.pnl import PnLAttributionEngine
+from rates_risk.pnl import PnLAttributionEngine
 
 # Initialize attribution engine
 engine = PnLAttributionEngine(
@@ -1144,7 +1144,7 @@ print(f"  Residual: ${attribution.components.residual:,.2f}")
 The library uses a unified \code{MarketState} container to encapsulate all market data required for pricing and risk:
 
 \begin{lstlisting}
-from rateslib import MarketState, CurveState
+from rates_risk import MarketState, CurveState
 
 # Create market state
 market_state = MarketState(
@@ -1175,7 +1175,7 @@ class CurveState:
 The \code{SabrSurfaceState} manages calibrated SABR parameters by bucket:
 
 \begin{lstlisting}
-from rateslib import SabrSurfaceState, SabrBucketParams
+from rates_risk import SabrSurfaceState, SabrBucketParams
 
 # Create SABR surface with bucketing
 sabr_surface = SabrSurfaceState(
@@ -1218,7 +1218,7 @@ The library supports an \code{("ALL", "ALL")} wildcard bucket that acts as a uni
 The \code{portfolio} module provides validated trade builders:
 
 \begin{lstlisting}
-from rateslib.portfolio import (
+from rates_risk.portfolio import (
     build_bond_trade,
     build_swap_trade,
     build_swaption_trade,
@@ -1245,7 +1245,7 @@ except InvalidOptionError as e:
 \subsection{Pricing with Diagnostics}
 
 \begin{lstlisting}
-from rateslib.portfolio import price_portfolio_with_diagnostics
+from rates_risk.portfolio import price_portfolio_with_diagnostics
 
 result = price_portfolio_with_diagnostics(
     positions_df,
@@ -1268,7 +1268,7 @@ for failure in result.failures:
 
 \section{Overview}
 
-This chapter specifies the integration of the SABR stochastic volatility model into \code{rateslib} for pricing vanilla rates options (caplets and swaptions) with smile-consistent risk management.
+This chapter specifies the integration of the SABR stochastic volatility model into \code{rates_risk} for pricing vanilla rates options (caplets and swaptions) with smile-consistent risk management.
 
 \subsection{Integration Completeness Criteria}
 
@@ -1366,7 +1366,7 @@ At ATM ($K=F$), this simplifies to:
 \subsection{End-to-End Example}
 
 \begin{lstlisting}
-from rateslib import (
+from rates_risk import (
     OISBootstrapper,
     build_sabr_surface,
     normalize_vol_quotes,
@@ -1445,7 +1445,7 @@ print(f"  Volga:             {risk_report.volga:,.0f}")
 \subsection{Options P\&L Attribution Example}
 
 \begin{lstlisting}
-from rateslib.pnl.attribution import (
+from rates_risk.pnl.attribution import (
     compute_option_pnl_attribution,
     aggregate_options_attribution
 )

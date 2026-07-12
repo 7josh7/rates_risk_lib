@@ -1,7 +1,9 @@
 # Interactive Dashboard - Features Summary
 
 ## Overview
-The Interactive Analytics Dashboard is a comprehensive Streamlit-based web application that visualizes **all functionality** from the Rates Risk Library. It provides 8 interactive tabs covering every major module.
+The Interactive Analytics Dashboard is an experimental Streamlit application
+that exercises the library's major workflows across eight tabs. Several panels
+are intentionally illustrative; see [`../MODEL_VALIDATION.md`](../MODEL_VALIDATION.md).
 
 ## Complete Feature List
 
@@ -329,7 +331,7 @@ The Interactive Analytics Dashboard is a comprehensive Streamlit-based web appli
 - **Visualization**: Plotly 5.18+ (interactive charts)
 - **Data**: Pandas for manipulation
 - **Computation**: NumPy for numerical operations
-- **Integration**: Direct import of all rateslib modules
+- **Integration**: Direct import of all rates_risk modules
 
 ### Performance Optimizations
 - `@st.cache_data` for data loading (market quotes, positions, historical rates)
@@ -472,10 +474,11 @@ The Interactive Analytics Dashboard covers the library’s core workflows (curve
 - ✅ Data exploration and export
 - ✅ **100% position coverage** - all instrument types supported
 
-The dashboard is production-ready, well-documented, and follows best practices for code quality and user experience.
+The dashboard is a research and demonstration interface, not a production risk
+system. Automated control-path tests establish regression health only.
 
 **Key Achievements:**
-- 177 comprehensive tests passing
+- Broad automated regression coverage across core and dashboard paths
 - All 12 sample positions pricing successfully
 - Enhanced custom scenario builder with live visualization
 - Full SABR integration across pricing and risk

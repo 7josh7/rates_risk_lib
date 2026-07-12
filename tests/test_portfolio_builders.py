@@ -15,7 +15,7 @@ import numpy as np
 from datetime import date
 from typing import Dict, Any
 
-from rateslib.portfolio.builders import (
+from rates_risk.portfolio.builders import (
     # Trade builders
     build_bond_trade,
     build_swap_trade,

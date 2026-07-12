@@ -7,8 +7,8 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from rateslib.curves import Curve, create_flat_curve
-from rateslib.var import (
+from rates_risk.curves import Curve, create_flat_curve
+from rates_risk.var import (
     HistoricalSimulation,
     MonteCarloVaR,
     ScenarioEngine,
@@ -236,7 +236,7 @@ class TestScenarioFuturesSupport:
     
     def test_fut_positions_included_in_scenarios(self):
         """Test that FUT positions are properly built from positions DataFrame."""
-        from rateslib.var.scenarios import _build_trade_from_position_legacy
+        from rates_risk.var.scenarios import _build_trade_from_position_legacy
         from datetime import date
         
         valuation_date = date(2024, 1, 15)
@@ -263,7 +263,7 @@ class TestScenarioFuturesSupport:
     
     def test_expired_fut_returns_none(self):
         """Test that expired FUT positions return None."""
-        from rateslib.var.scenarios import _build_trade_from_position_legacy
+        from rates_risk.var.scenarios import _build_trade_from_position_legacy
         from datetime import date
         
         valuation_date = date(2024, 6, 20)  # After expiry
@@ -283,7 +283,7 @@ class TestScenarioFuturesSupport:
     
     def test_short_fut_has_negative_contracts(self):
         """Test that SHORT FUT positions have negative contract count."""
-        from rateslib.var.scenarios import _build_trade_from_position_legacy
+        from rates_risk.var.scenarios import _build_trade_from_position_legacy
         from datetime import date
         
         valuation_date = date(2024, 1, 15)

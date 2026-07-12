@@ -2,12 +2,12 @@ import pandas as pd
 from datetime import date
 from pathlib import Path
 
-from rateslib.curves.bootstrap import bootstrap_from_quotes
-from rateslib.market_state import CurveState, MarketState
-from rateslib.vol.quotes import normalize_vol_quotes
-from rateslib.vol.calibration import build_sabr_surface
-from rateslib.risk.reporting import compute_limit_metrics
-from rateslib.risk.limits import evaluate_limits, DEFAULT_LIMITS
+from rates_risk.curves.bootstrap import bootstrap_from_quotes
+from rates_risk.market_state import CurveState, MarketState
+from rates_risk.vol.quotes import normalize_vol_quotes
+from rates_risk.vol.calibration import build_sabr_surface
+from rates_risk.risk.reporting import compute_limit_metrics
+from rates_risk.risk.limits import evaluate_limits, DEFAULT_LIMITS
 
 
 def build_market_state():

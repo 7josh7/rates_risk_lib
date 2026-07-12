@@ -26,14 +26,14 @@ import pandas as pd
 # Add src to path for local imports
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 
-from rateslib.curves.bootstrap import bootstrap_from_quotes
-from rateslib.market_state import CurveState, MarketState
-from rateslib.vol.quotes import normalize_vol_quotes
-from rateslib.vol.calibration import build_sabr_surface
-from rateslib.vol.sabr_surface import make_bucket_key
-from rateslib.vol.sabr import SabrModel, hagan_black_vol, hagan_normal_vol
-from rateslib.options.swaption import SwaptionPricer
-from rateslib.dates import DateUtils
+from rates_risk.curves.bootstrap import bootstrap_from_quotes
+from rates_risk.market_state import CurveState, MarketState
+from rates_risk.vol.quotes import normalize_vol_quotes
+from rates_risk.vol.calibration import build_sabr_surface
+from rates_risk.vol.sabr_surface import make_bucket_key
+from rates_risk.vol.sabr import SabrModel, hagan_black_vol, hagan_normal_vol
+from rates_risk.options.swaption import SwaptionPricer
+from rates_risk.dates import DateUtils
 
 
 ROOT = Path(__file__).resolve().parent.parent

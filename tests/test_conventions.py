@@ -5,7 +5,7 @@ Unit tests for conventions module.
 from datetime import date
 import pytest
 
-from rateslib.conventions import (
+from rates_risk.conventions import (
     DayCount,
     BusinessDayConvention,
     year_fraction,

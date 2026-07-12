@@ -12,16 +12,16 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from rateslib.curves import Curve, create_flat_curve
-from rateslib.market_state import MarketState, CurveState
-from rateslib.risk.reporting import (
+from rates_risk.curves import Curve, create_flat_curve
+from rates_risk.market_state import MarketState, CurveState
+from rates_risk.risk.reporting import (
     compute_curve_risk_metrics,
     CurveRiskMetrics,
     build_var_portfolio_pricer,
     VaRCoverageInfo,
     _parse_date,
 )
-from rateslib.var.scenarios import (
+from rates_risk.var.scenarios import (
     run_scenario_set,
     run_single_scenario,
     scenarios_to_dataframe,

@@ -170,7 +170,7 @@ The interactive dashboard uses:
 - **Plotly** for interactive visualizations
 - **Pandas** for data manipulation
 - **NumPy** for numerical calculations
-- Integrates directly with all rateslib modules
+- Integrates directly with all rates_risk modules
 
 ### Performance
 - Curves are cached using `@st.cache_resource`
@@ -181,7 +181,7 @@ The interactive dashboard uses:
 The dashboard is designed to be easily extended:
 - Add new tabs by duplicating the tab structure
 - Add new visualizations using Plotly
-- Integrate additional rateslib modules as they're developed
+- Integrate additional rates_risk modules as they're developed
 - Customize styling via the embedded CSS
 
 ## Coverage

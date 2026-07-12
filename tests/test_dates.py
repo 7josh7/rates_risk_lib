@@ -5,7 +5,7 @@ Unit tests for dates module.
 from datetime import date
 import pytest
 
-from rateslib.dates import DateUtils, ScheduleInfo, generate_bond_schedule
+from rates_risk.dates import DateUtils, ScheduleInfo, generate_bond_schedule
 
 
 class TestDateUtils:
@@ -99,7 +99,7 @@ class TestScheduleGeneration:
     
     def test_generate_bond_schedule(self):
         """Test bond schedule generation."""
-        from rateslib.conventions import DayCount
+        from rates_risk.conventions import DayCount
         schedule = generate_bond_schedule(
             settle=date(2024, 1, 15),
             maturity=date(2026, 1, 15),
@@ -113,7 +113,7 @@ class TestScheduleGeneration:
     
     def test_schedule_frequency_annual(self):
         """Test annual frequency."""
-        from rateslib.conventions import DayCount
+        from rates_risk.conventions import DayCount
         schedule = generate_bond_schedule(
             settle=date(2024, 1, 15),
             maturity=date(2027, 1, 15),
@@ -126,7 +126,7 @@ class TestScheduleGeneration:
     
     def test_schedule_frequency_quarterly(self):
         """Test quarterly frequency."""
-        from rateslib.conventions import DayCount
+        from rates_risk.conventions import DayCount
         schedule = generate_bond_schedule(
             settle=date(2024, 1, 15),
             maturity=date(2025, 1, 15),
