@@ -41,12 +41,14 @@ dev = [
     "ruff>=0.6.0",
 ]
 dashboard = [
+    "matplotlib>=3.7.0,<4",
     "plotly>=5.18.0",
     "shiny>=0.6.0",
     "shinywidgets>=0.3.0",
     "streamlit>=1.28.0",
 ]
 all = [
+    "matplotlib>=3.7.0,<4",
     "plotly>=5.18.0",
     "shiny>=0.6.0",
     "shinywidgets>=0.3.0",
